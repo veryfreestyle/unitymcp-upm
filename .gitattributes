@@ -1,0 +1,2 @@
+Editor/Server~/osx-arm64/unity-mcp-server filter=lfs diff=lfs merge=lfs -text
+Editor/Server~/win-x64/unity-mcp-server.exe filter=lfs diff=lfs merge=lfs -text

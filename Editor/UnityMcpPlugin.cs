@@ -1,0 +1,221 @@
+using System;
+using System.IO;
+using UnityEditor;
+using UnityEngine;
+using UnityMCP.Editor.Infrastructure;
+using VeryFS.UnityMCP.Editor.Commands;
+using VeryFS.UnityMCP.Editor.Commands.Console;
+using VeryFS.UnityMCP.Editor.Protocol;
+using VeryFS.UnityMCP.Editor.Commands.Editor;
+using VeryFS.UnityMCP.Editor.Commands.FairyGUI;
+using VeryFS.UnityMCP.Editor.Commands.Scene;
+using VeryFS.UnityMCP.Editor.Commands.Screenshot;
+using VeryFS.UnityMCP.Editor.Infrastructure;
+using VeryFS.UnityMCP.Editor.Lifecycle;
+using VeryFS.UnityMCP.Editor.Logs;
+using VeryFS.UnityMCP.Editor.Persistence;
+using VeryFS.UnityMCP.Editor.Transport;
+
+namespace VeryFS.UnityMCP.Editor
+{
+    [InitializeOnLoad]
+    internal static class UnityMcpPlugin
+    {
+        private static readonly PendingRequestStore pendingRequestStore;
+        private static readonly AssetsRefreshCommand assetsRefreshCommand;
+        private static readonly RpcCommandRegistry registry;
+        // Field retained to prevent GC of production connection loop
+        private static RpcConnectionLoop productionLoop;
+        // Fields retained to prevent GC of the console log collector/storage
+        private static UnityLogCollector logCollector;
+        private static FileLogStorage logStorage;
+
+        static UnityMcpPlugin()
+        {
+            pendingRequestStore = new PendingRequestStore(Path.Combine(
+                Directory.GetParent(Application.dataPath).FullName,
+                "Library",
+                "VeryFreestyle.UnityMcp",
+                "requests"));
+            assetsRefreshCommand = new AssetsRefreshCommand(
+                new UnityAssetDatabase(),
+                new UnityEditorBusyState(),
+                pendingRequestStore,
+                new SystemClock());
+            registry = new RpcCommandRegistry();
+            registry.Register(assetsRefreshCommand);
+            var stateProvider = new UnityEditorStateProvider();
+            registry.Register(new GetApplicationStateCommand(stateProvider));
+            registry.Register(new SetApplicationStateCommand(
+                new UnityPlayModeController(), stateProvider, new UnityEditorBusyState(),
+                pendingRequestStore, new SystemClock()));
+            // Console log collection: persist to Temp so logs survive domain reloads.
+            // Wrapped so a collector/storage failure can never break [InitializeOnLoad]
+            // (which also runs while the test domain loads).
+            try
+            {
+                var consoleClock = new SystemClock();
+                logStorage = new FileLogStorage(
+                    Path.Combine(
+                        Directory.GetParent(Application.dataPath).FullName,
+                        "Temp",
+                        "UnityMCP",
+                        "console-logs.json"),
+                    consoleClock);
+                logCollector = new UnityLogCollector(logStorage, consoleClock);
+                AssemblyReloadEvents.beforeAssemblyReload += logStorage.Flush;
+                registry.RegisterGroup(new RpcGroupDefinition
+                {
+                    Group = RpcMethods.ConsoleGroup, ToolName = "console",
+                    Title = "Console",
+                    Description = "Read or clear the Unity console log buffer. action: get-logs | clear-logs."
+                });
+                registry.Register(new ConsoleGetLogsCommand(logStorage, consoleClock));
+                registry.Register(new ConsoleClearLogsCommand(logStorage, new UnityEditorBusyState(),
+                    () => System.Reflection.Assembly.GetAssembly(typeof(EditorWindow))
+                        .GetType("UnityEditor.LogEntries")?.GetMethod("Clear")?.Invoke(null, null)));
+            }
+            catch (Exception ex)
+            {
+                UnityEngine.Debug.LogWarning("Unity MCP: console log collector wiring failed. " + ex.Message);
+            }
+            // RpcConnectionLoop.StartAsync loads and recovers pending records after registration.
+
+            // Ensure the project's server is up (auto-launch / reuse / refuse),
+            // then connect only when we own it. Tokens survive Domain Reload.
+            string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+            registry.Register(new ScreenshotGameViewCommand(
+                new UnityGameViewCapturer(),
+                Path.Combine(projectRoot, "Temp", "UnityMCP", "screenshots"),
+                new UlidLikeIdGenerator()));
+            var panelSource = new FairyGUIPanelSource();
+            var stageInput = new UnityStageInput();
+            var frameStepper = new UniTaskFrameStepper();
+            registry.RegisterGroup(new RpcGroupDefinition
+            {
+                Group = RpcMethods.FairyGuiQueryGroup, ToolName = "fgui-query",
+                Title = "FairyGUI / Query",
+                Description = "Inspect the live FairyGUI hierarchy. action: get-tree | list-panels."
+            });
+            registry.Register(new FairyGUIGetTreeCommand(panelSource));
+            registry.Register(new FairyGUIListPanelsCommand(panelSource));
+            registry.RegisterGroup(new RpcGroupDefinition
+            {
+                Group = RpcMethods.FairyGuiStateGroup, ToolName = "fgui-state",
+                Title = "FairyGUI / State",
+                Description = "Read/write FairyGUI object state synchronously. action: set-text | set-value | " +
+                    "set-controller | set-selection | scroll | transition | focus | call-event. Play mode only."
+            });
+            registry.Register(new FairyGUICallEventCommand(panelSource));
+            registry.Register(new FairyGUISetTextCommand(panelSource));
+            registry.Register(new FairyGUISetControllerCommand(panelSource));
+            registry.Register(new FairyGUISetValueCommand(panelSource));
+            registry.Register(new FairyGUISetSelectionCommand(panelSource));
+            registry.Register(new FairyGUIScrollCommand(panelSource));
+            registry.Register(new FairyGUITransitionCommand(panelSource));
+            registry.Register(new FairyGUIFocusCommand(panelSource));
+            registry.RegisterGroup(new RpcGroupDefinition
+            {
+                Group = RpcMethods.FairyGuiInputGroup, ToolName = "fgui-input",
+                Title = "FairyGUI / Input",
+                Description = "Drive FairyGUI objects through the real input pipeline (async, cross-frame). " +
+                    "action: click | double-click | hover | gesture. Play mode only."
+            });
+            registry.Register(new FairyGUIClickCommand(panelSource, stageInput, frameStepper));
+            registry.Register(new FairyGUIDoubleClickCommand(panelSource, stageInput, frameStepper));
+            registry.Register(new FairyGUIGestureCommand(panelSource, stageInput, frameStepper));
+            registry.Register(new FairyGUIHoverCommand(panelSource, stageInput, frameStepper));
+            var sceneGateway = new UnitySceneGateway();
+            registry.RegisterGroup(new RpcGroupDefinition
+            {
+                Group = RpcMethods.SceneGroup, ToolName = "scene",
+                Title = "Scene",
+                Description = "Query or mutate the open Editor scene(s). action: get | open | save."
+            });
+            registry.Register(new EditorSceneGetCommand(sceneGateway));
+            registry.Register(new EditorSceneOpenCommand(sceneGateway));
+            registry.Register(new EditorSceneSaveCommand(sceneGateway));
+            registry.RegisterGroup(new RpcGroupDefinition
+            {
+                Group = RpcMethods.GameObjectGroup, ToolName = "gameobject",
+                Title = "GameObject",
+                Description = "Locate GameObjects and read their components in the open scene. action: find | component-get."
+            });
+            registry.Register(new GameObjectFindCommand(new UnityEditorBusyState(), new UnityGameObjectLocator()));
+            registry.Register(new GameObjectComponentGetCommand(new UnityEditorBusyState(), new UnityGameObjectLocator()));
+            registry.Register(new BatchExecuteCommand(
+                registry, new UniTaskFrameStepper(), new UniTaskDelayProvider()));
+            int port = ProjectPortCalculator.GetPort(projectRoot);
+            ServerTokens tokens = TokenStore.GetOrCreate();
+            int editorPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+
+            var launcher = ServerLauncher.CreateDefault();
+            ServerLaunchResult launch = launcher.EnsureServer(
+                projectRoot,
+                EditorSession.Current.EditorSessionId,
+                editorPid,
+                port,
+                tokens);
+            if (!launch.ShouldConnect)
+            {
+                UnityEngine.Debug.LogWarning(
+                    "Unity MCP: not connecting this Editor. " + launch.Reason);
+                return;
+            }
+
+            string url = $"ws://127.0.0.1:{port}/unity";
+            UnityEngine.Debug.Log($"Unity MCP: Connecting to {url} (port calculated from project path)");
+            var productionDispatcher = new EditorMainThreadDispatcher();
+            productionLoop = new RpcConnectionLoop(
+                new Uri(url),
+                registry,
+                pendingRequestStore,
+                productionDispatcher,
+                EditorSession.Current,
+                new UlidLikeIdGenerator(),
+                true,
+                tokens.UnityToken,
+                ensureServerAlive: () =>
+                {
+                    var result = launcher.EnsureServer(
+                        projectRoot,
+                        EditorSession.Current.EditorSessionId,
+                        editorPid,
+                        port,
+                        tokens);
+                    if (!result.ShouldConnect)
+                    {
+                        UnityEngine.Debug.LogWarning("Unity MCP: server re-launch refused, stopping reconnect. " + result.Reason);
+                    }
+                    return result.ShouldConnect;
+                });
+            _ = productionLoop.StartAsync();
+
+            EditorApplication.quitting += OnEditorQuitting;
+        }
+
+        private static void OnEditorQuitting()
+        {
+            // Normal shutdown: drop our connection so the server's PID monitor and
+            // /unity disconnect path can retire the owned server instead of leaving
+            // an orphan. (The server also self-exits when this editor PID dies.)
+            productionLoop?.Dispose();
+        }
+
+        internal static RpcConnectionLoop StartForTests(string url)
+        {
+            var testDispatcher = new EditorMainThreadDispatcher();
+            var loop = new RpcConnectionLoop(
+                new Uri(url),
+                registry,
+                pendingRequestStore,
+                testDispatcher,
+                EditorSession.Current,
+                new UlidLikeIdGenerator(),
+                true,
+                null);
+            _ = loop.StartAsync();
+            return loop;
+        }
+    }
+}

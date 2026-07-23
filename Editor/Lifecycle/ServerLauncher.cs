@@ -12,23 +12,27 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
     /// </summary>
     public readonly struct ServerLaunchResult
     {
-        public ServerLaunchResult(bool shouldConnect, string reason)
+        public ServerLaunchResult(bool shouldConnect, string reason, int serverPid)
         {
             ShouldConnect = shouldConnect;
             Reason = reason;
+            ServerPid = serverPid;
         }
 
         public bool ShouldConnect { get; }
         public string Reason { get; }
 
-        public static ServerLaunchResult Connect()
+        /// <summary>Server process pid we should own/monitor (0 when refusing).</summary>
+        public int ServerPid { get; }
+
+        public static ServerLaunchResult Connect(int serverPid)
         {
-            return new ServerLaunchResult(true, null);
+            return new ServerLaunchResult(true, null, serverPid);
         }
 
         public static ServerLaunchResult Refuse(string reason)
         {
-            return new ServerLaunchResult(false, reason);
+            return new ServerLaunchResult(false, reason, 0);
         }
     }
 
@@ -73,8 +77,8 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
                     //      connection (e.g. previous Editor exited cleanly or a
                     //      play-mode domain reload disconnected C# before [InitializeOnLoad]
                     //      ran again). Safe to take over.
-                    WriteDiscovery(projectRoot, editorSessionId, editorPid, port, 0, tokens);
-                    return ServerLaunchResult.Connect();
+                    WriteDiscovery(projectRoot, editorSessionId, editorPid, port, health.ServerPid, tokens);
+                    return ServerLaunchResult.Connect(health.ServerPid);
                 }
 
                 var reason = "Unity MCP: port " + port + " is owned by another Editor session (" +
@@ -95,7 +99,7 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
             var serverPid = spawner.Spawn(binary, projectRoot, editorPid, port, tokens);
             Debug.Log("Unity MCP: server spawned (pid " + serverPid + ") on port " + port + ".");
             WriteDiscovery(projectRoot, editorSessionId, editorPid, port, serverPid, tokens);
-            return ServerLaunchResult.Connect();
+            return ServerLaunchResult.Connect(serverPid);
         }
 
         private static void WriteDiscovery(
@@ -143,7 +147,10 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
                         var sessionId = json.ContainsKey("editorSessionId")
                             ? (string)json["editorSessionId"]
                             : null;
-                        return new HealthProbeResult(true, sessionId);
+                        var serverPid = json.ContainsKey("serverPid") && json["serverPid"].IsInt
+                            ? (int)json["serverPid"]
+                            : 0;
+                        return new HealthProbeResult(true, sessionId, serverPid);
                     }
                 }
                 catch (Exception)

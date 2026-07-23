@@ -156,6 +156,10 @@ namespace VeryFS.UnityMCP.Editor
                 editorPid,
                 port,
                 tokens);
+            if (launch.ShouldConnect && launch.ServerPid > 0)
+            {
+                VeryFS.UnityMCP.Editor.Infrastructure.ServerPidHolder.Set(launch.ServerPid);
+            }
             if (!launch.ShouldConnect)
             {
                 UnityEngine.Debug.LogWarning(
@@ -183,6 +187,10 @@ namespace VeryFS.UnityMCP.Editor
                         editorPid,
                         port,
                         tokens);
+                    if (result.ShouldConnect && result.ServerPid > 0)
+                    {
+                        VeryFS.UnityMCP.Editor.Infrastructure.ServerPidHolder.Set(result.ServerPid);
+                    }
                     if (!result.ShouldConnect)
                     {
                         UnityEngine.Debug.LogWarning("Unity MCP: server re-launch refused, stopping reconnect. " + result.Reason);

@@ -4,19 +4,23 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
     /// editorSessionId currently owns the server.</summary>
     public readonly struct HealthProbeResult
     {
-        public HealthProbeResult(bool alive, string editorSessionId)
+        public HealthProbeResult(bool alive, string editorSessionId, int serverPid)
         {
             Alive = alive;
             EditorSessionId = editorSessionId;
+            ServerPid = serverPid;
         }
 
         public bool Alive { get; }
         public string EditorSessionId { get; }
 
+        /// <summary>Server process pid from /health (0 when unknown/absent).</summary>
+        public int ServerPid { get; }
+
         /// <summary>No server answered on the port.</summary>
         public static HealthProbeResult Down()
         {
-            return new HealthProbeResult(false, null);
+            return new HealthProbeResult(false, null, 0);
         }
     }
 

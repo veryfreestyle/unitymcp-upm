@@ -15,6 +15,7 @@ namespace VeryFS.UnityMCP.Editor.Compilation
     {
         private static PendingRequestStore store;
         private static IClock clock;
+        private static ICurrentCompilerErrors currentErrors;
         private static string activeRequestId;
         private static bool idleObserved;
         private static bool compilationInProgress;
@@ -30,10 +31,14 @@ namespace VeryFS.UnityMCP.Editor.Compilation
 
         internal static string ActiveRequestId => activeRequestId;
 
-        internal static void Configure(PendingRequestStore requestStore, IClock requestClock)
+        internal static void Configure(
+            PendingRequestStore requestStore,
+            IClock requestClock,
+            ICurrentCompilerErrors requestCompilerErrors = null)
         {
             store = requestStore;
             clock = requestClock;
+            currentErrors = requestCompilerErrors;
         }
 
         internal static void StartTracking(string originRequestId)
@@ -84,6 +89,10 @@ namespace VeryFS.UnityMCP.Editor.Compilation
             {
                 RefreshResultBuilder.MarkFailedFromCompilerErrors(request, finishedAt);
             }
+            else if (TryMergeExistingCompileErrors(request))
+            {
+                RefreshResultBuilder.MarkFailedFromExistingErrors(request, finishedAt);
+            }
             else
             {
                 RefreshResultBuilder.MarkSucceeded(request, finishedAt, request.CompilationTriggered);
@@ -98,11 +107,48 @@ namespace VeryFS.UnityMCP.Editor.Compilation
             return request;
         }
 
-        internal static void CompleteWhenIdle()
+        private static bool TryMergeExistingCompileErrors(PendingRefreshRequest request)
         {
-            if (!CompleteWhenIdle(EditorApplication.isCompiling, EditorApplication.isUpdating))
+            if (currentErrors == null || !currentErrors.ProjectHasCompileErrors())
             {
-                EditorApplication.delayCall += CompleteWhenIdle;
+                return false;
+            }
+
+            var existing = currentErrors.ReadCompileErrors();
+            if (existing.Count == 0)
+            {
+                // The authoritative flag says the project is broken but the console
+                // no longer holds the details (e.g. it was cleared). Surface one
+                // informative entry so the refresh still reports failed instead of a
+                // misleading success.
+                existing.Add(new CompilerMessage(
+                    string.Empty, string.Empty, 0, 0,
+                    "Project has compile errors, but details are unavailable. Recompile to surface them.",
+                    true));
+            }
+
+            request.CompilerErrors.AddRange(existing);
+            return true;
+        }
+
+        internal static void ScheduleCompletion()
+        {
+            // Drive completion polling from EditorApplication.update, NOT
+            // EditorApplication.delayCall. delayCall starves while the Editor sits
+            // idle and unfocused in the background (the normal state while a client
+            // drives Unity through MCP), so a refresh that triggers no compilation
+            // stayed "processing" until the server-side timeout fired (~120s).
+            // update keeps ticking in that state -- it is the same pump the
+            // main-thread dispatcher relies on -- so the idle poll settles promptly.
+            EditorApplication.update -= PollCompletion;
+            EditorApplication.update += PollCompletion;
+        }
+
+        private static void PollCompletion()
+        {
+            if (CompleteWhenIdle(EditorApplication.isCompiling, EditorApplication.isUpdating))
+            {
+                EditorApplication.update -= PollCompletion;
             }
         }
 

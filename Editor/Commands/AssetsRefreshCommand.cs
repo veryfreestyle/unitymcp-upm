@@ -48,7 +48,7 @@ namespace VeryFS.UnityMCP.Editor.Commands
             this.editorBusyState = editorBusyState;
             this.store = store;
             this.clock = clock;
-            CompilationTracker.Configure(store, clock);
+            CompilationTracker.Configure(store, clock, new ConsoleCompilerErrors());
         }
 
         public string Method => RpcMethods.AssetsRefresh;
@@ -109,7 +109,7 @@ namespace VeryFS.UnityMCP.Editor.Commands
                 // what distinguishes "genuinely nothing to compile" from "compilation is
                 // about to start". If compilation did run before the reload, the persisted
                 // CompilationTriggered flag makes CompleteWhenIdle settle on the next tick.
-                EditorApplication.delayCall += CompilationTracker.CompleteWhenIdle;
+                CompilationTracker.ScheduleCompletion();
             }
         }
 
@@ -180,7 +180,7 @@ namespace VeryFS.UnityMCP.Editor.Commands
                 store.Save(request);
                 CompilationTracker.StartTracking(requestId);
                 assetDatabase.Refresh();
-                EditorApplication.delayCall += CompilationTracker.CompleteWhenIdle;
+                CompilationTracker.ScheduleCompletion();
             }
             catch
             {

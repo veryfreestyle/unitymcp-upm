@@ -32,6 +32,20 @@ namespace VeryFS.UnityMCP.Editor.Compilation
             return request;
         }
 
+        public static PendingRefreshRequest MarkFailedFromExistingErrors(
+            PendingRefreshRequest request,
+            string finishedAt)
+        {
+            request.State = "failed";
+            request.FinishedAt = finishedAt;
+            request.DurationMs = DurationInMilliseconds(request.StartedAt, finishedAt);
+            // No compilation ran during this refresh; the errors were already
+            // present in the project, so CompilationTriggered stays false.
+            request.CompilationTriggered = false;
+            request.ErrorCode = "compilation_failed";
+            return request;
+        }
+
         public static PendingRefreshRequest MarkRefreshFailed(
             PendingRefreshRequest request,
             string finishedAt)

@@ -1,4 +1,3 @@
-using System;
 using VeryFS.UnityMCP.Editor.Logs;
 using VeryFS.UnityMCP.Editor.Protocol;
 
@@ -6,15 +5,13 @@ namespace VeryFS.UnityMCP.Editor.Commands.Console
 {
     public sealed class ConsoleClearLogsCommand : IGroupedCommand
     {
-        private readonly ILogStorage storage;
+        private readonly IConsoleLogReader reader;
         private readonly IEditorBusyState busy;
-        private readonly Action clearConsole;
 
-        public ConsoleClearLogsCommand(ILogStorage storage, IEditorBusyState busy, Action clearConsole)
+        public ConsoleClearLogsCommand(IConsoleLogReader reader, IEditorBusyState busy)
         {
-            this.storage = storage;
+            this.reader = reader;
             this.busy = busy;
-            this.clearConsole = clearConsole;
         }
 
         public string Method => RpcMethods.ConsoleClearLogs;
@@ -26,7 +23,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Console
             Name = "console-clear-logs",
             RpcMethod = RpcMethods.ConsoleClearLogs,
             Title = "Console / Clear Logs",
-            Description = "Clear the collected console logs.",
+            Description = "Clear the Unity Console (native LogEntries buffer).",
             Completion = "response",
             FailureMode = "error",
             InputSchema = JsonRpcSerializer.Object(("type", "object"), ("additionalProperties", false))
@@ -40,16 +37,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Console
                     JsonRpcErrorCodes.EditorBusy, "Editor is busy.",
                     JsonRpcSerializer.Object(("errorCode", "editor_busy"))));
             }
-            storage.Clear();
-            try
-            {
-                clearConsole?.Invoke();
-            }
-            catch
-            {
-                // Best-effort native console clear.
-            }
-            return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("cleared", true)));
+            bool cleared = reader.Clear();
+            return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("cleared", cleared)));
         }
     }
 }

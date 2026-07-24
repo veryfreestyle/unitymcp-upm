@@ -1,5 +1,4 @@
 using LitJson;
-using VeryFS.UnityMCP.Editor.Infrastructure;
 using VeryFS.UnityMCP.Editor.Logs;
 using VeryFS.UnityMCP.Editor.Protocol;
 
@@ -7,13 +6,11 @@ namespace VeryFS.UnityMCP.Editor.Commands.Console
 {
     public sealed class ConsoleGetLogsCommand : IGroupedCommand
     {
-        private readonly ILogStorage storage;
-        private readonly IClock clock;
+        private readonly IConsoleLogReader reader;
 
-        public ConsoleGetLogsCommand(ILogStorage storage, IClock clock)
+        public ConsoleGetLogsCommand(IConsoleLogReader reader)
         {
-            this.storage = storage;
-            this.clock = clock;
+            this.reader = reader;
         }
 
         public string Method => RpcMethods.ConsoleGetLogs;
@@ -25,7 +22,10 @@ namespace VeryFS.UnityMCP.Editor.Commands.Console
             Name = "console-get-logs",
             RpcMethod = RpcMethods.ConsoleGetLogs,
             Title = "Console / Get Logs",
-            Description = "Return collected Unity console logs, newest first, with type/time/count filters.",
+            Description = "Return current Unity Console entries, newest first, read directly from the "
+                + "native console buffer (matches what the Console window shows, including "
+                + "editor-internal/native entries). logTypeFilter is case-insensitive; \"error\" also "
+                + "includes exceptions and assertions. No timestamps are available for this source.",
             Completion = "response",
             FailureMode = "error",
             InputSchema = JsonRpcSerializer.Object(
@@ -34,32 +34,30 @@ namespace VeryFS.UnityMCP.Editor.Commands.Console
                 ("properties", JsonRpcSerializer.Object(
                     ("maxEntries", JsonRpcSerializer.Object(("type", "integer"), ("minimum", 1), ("maximum", 500))),
                     ("logTypeFilter", JsonRpcSerializer.Object(("type", "string"))),
-                    ("includeStackTrace", JsonRpcSerializer.Object(("type", "boolean"))),
-                    ("lastMinutes", JsonRpcSerializer.Object(("type", "integer"), ("minimum", 0)))))),
+                    ("includeStackTrace", JsonRpcSerializer.Object(("type", "boolean")))))),
             Annotations = JsonRpcSerializer.Object(("readOnlyHint", true))
         };
 
         public JsonRpcResponse Handle(JsonRpcRequest request)
         {
             int maxEntries = ReadInt(request.Params, "maxEntries", 100);
-            int lastMinutes = ReadInt(request.Params, "lastMinutes", 0);
             bool includeStackTrace = ReadBool(request.Params, "includeStackTrace");
             string logTypeFilter = ReadString(request.Params, "logTypeFilter");
 
-            if (maxEntries < 1 || maxEntries > 500 || lastMinutes < 0)
+            if (maxEntries < 1 || maxEntries > 500)
             {
                 return JsonRpcResponse.FromError(request.Id, new JsonRpcError(
                     JsonRpcErrorCodes.InvalidParams, "invalid params",
                     JsonRpcSerializer.Object(("errorCode", "invalid_params"))));
             }
 
-            var logs = storage.Query(maxEntries, logTypeFilter, includeStackTrace, lastMinutes, clock.UtcNow, out var truncated);
+            var logs = reader.Read(maxEntries, logTypeFilter, includeStackTrace, out var truncated);
             var entries = new JsonData();
             entries.SetJsonType(JsonType.Array);
             foreach (var e in logs)
             {
                 var obj = JsonRpcSerializer.Object(
-                    ("timestampUtc", e.TimestampUtc), ("type", e.Type), ("message", e.Message));
+                    ("type", e.Type), ("message", e.Message), ("file", e.File ?? string.Empty), ("line", e.Line));
                 if (includeStackTrace)
                 {
                     obj["stackTrace"] = e.StackTrace ?? string.Empty;

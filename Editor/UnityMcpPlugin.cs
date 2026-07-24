@@ -26,9 +26,6 @@ namespace VeryFS.UnityMCP.Editor
         private static readonly RpcCommandRegistry registry;
         // Field retained to prevent GC of production connection loop
         private static RpcConnectionLoop productionLoop;
-        // Fields retained to prevent GC of the console log collector/storage
-        private static UnityLogCollector logCollector;
-        private static FileLogStorage logStorage;
 
         static UnityMcpPlugin()
         {
@@ -49,35 +46,25 @@ namespace VeryFS.UnityMCP.Editor
             registry.Register(new SetApplicationStateCommand(
                 new UnityPlayModeController(), stateProvider, new UnityEditorBusyState(),
                 pendingRequestStore, new SystemClock()));
-            // Console log collection: persist to Temp so logs survive domain reloads.
-            // Wrapped so a collector/storage failure can never break [InitializeOnLoad]
-            // (which also runs while the test domain loads).
+            // Console: read entries directly from the native Console buffer (UnityEditor.LogEntries)
+            // so get-logs matches the Console window -- including editor-internal/native entries
+            // that never fire Application.logMessageReceived. Wrapped so a wiring failure can never
+            // break [InitializeOnLoad] (which also runs while the test domain loads).
             try
             {
-                var consoleClock = new SystemClock();
-                logStorage = new FileLogStorage(
-                    Path.Combine(
-                        Directory.GetParent(Application.dataPath).FullName,
-                        "Temp",
-                        "UnityMCP",
-                        "console-logs.json"),
-                    consoleClock);
-                logCollector = new UnityLogCollector(logStorage, consoleClock);
-                AssemblyReloadEvents.beforeAssemblyReload += logStorage.Flush;
+                var consoleReader = new EditorConsoleLogReader();
                 registry.RegisterGroup(new RpcGroupDefinition
                 {
                     Group = RpcMethods.ConsoleGroup, ToolName = "console",
                     Title = "Console",
                     Description = "Read or clear the Unity console log buffer. action: get-logs | clear-logs."
                 });
-                registry.Register(new ConsoleGetLogsCommand(logStorage, consoleClock));
-                registry.Register(new ConsoleClearLogsCommand(logStorage, new UnityEditorBusyState(),
-                    () => System.Reflection.Assembly.GetAssembly(typeof(EditorWindow))
-                        .GetType("UnityEditor.LogEntries")?.GetMethod("Clear")?.Invoke(null, null)));
+                registry.Register(new ConsoleGetLogsCommand(consoleReader));
+                registry.Register(new ConsoleClearLogsCommand(consoleReader, new UnityEditorBusyState()));
             }
             catch (Exception ex)
             {
-                UnityEngine.Debug.LogWarning("Unity MCP: console log collector wiring failed. " + ex.Message);
+                UnityEngine.Debug.LogWarning("Unity MCP: console wiring failed. " + ex.Message);
             }
             // RpcConnectionLoop.StartAsync loads and recovers pending records after registration.
 

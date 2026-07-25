@@ -1,6 +1,6 @@
 {
   "name": "com.veryfreestyle.unitymcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "VeryFS UnityMCP",
   "description": "Exposes Unity Editor via Model Context Protocol (MCP)",
   "unity": "2021.3",

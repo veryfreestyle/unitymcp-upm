@@ -66,7 +66,7 @@ Start-Process "C:\Program Files\Unity\Hub\Editor\<UNITY_VERSION>\Editor\Unity.ex
   -ArgumentList "-projectPath <PROJECT_PATH> -logFile C:\temp\unity-editor.log"
 ```
 
-就绪要 15–25 秒（判据 `health`）。关闭：macOS/Linux 用 `pkill -f "Unity.app/Contents/MacOS/Unity"`，Windows 用 `taskkill /IM Unity.exe /F`。**同时只能有一个 Unity 实例**（License 冲突），启动前检查：macOS/Linux `pgrep -fl "Unity.app/Contents/MacOS/Unity"`，Windows `tasklist | findstr Unity.exe`；有编译错误时会弹模态框卡住就绪，先用 batchmode 验证。
+就绪要 15–25 秒（判据 `health`）。关闭：macOS/Linux 用 `pkill -f "Unity.app/Contents/MacOS/Unity"`，Windows 用 `taskkill /IM Unity.exe /F`。**同一个项目不能被两个 Unity 实例同时打开**（锁文件 `<PROJECT_PATH>/Temp/UnityLockfile`），不同项目可并行。开工前查本项目的锁：macOS/Linux `[ -e "<PROJECT_PATH>/Temp/UnityLockfile" ] && echo 占用中`，Windows `Test-Path "<PROJECT_PATH>\Temp\UnityLockfile"`；`pgrep`/`tasklist` 只能看有哪些实例在跑，不能当阻塞判据。有编译错误时会弹模态框卡住就绪，先用 batchmode 验证。
 
 #### 后备：batchmode CLI
 

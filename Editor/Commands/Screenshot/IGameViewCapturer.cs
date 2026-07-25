@@ -1,7 +1,6 @@
 using System;
-using System.Reflection;
-using UnityEditor;
 using UnityEngine;
+using VeryFS.UnityMCP.Editor.Commands.GameView;
 
 namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
 {
@@ -11,6 +10,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
         public Color32[] Pixels;
         public int Width;
         public int Height;
+        public string ErrorCode;
         public string Error;
     }
 
@@ -23,24 +23,39 @@ namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
     // rendering Game View window; unavailable in -nographics batchmode.
     public sealed class UnityGameViewCapturer : IGameViewCapturer
     {
+        private readonly IGameViewEnvironment environment;
+
+        public UnityGameViewCapturer()
+            : this(new UnityGameViewEnvironment())
+        {
+        }
+
+        public UnityGameViewCapturer(IGameViewEnvironment environment)
+        {
+            this.environment = environment;
+        }
+
         public CaptureResult Capture(int maxEdge)
         {
-            var gameViewType = Type.GetType("UnityEditor.GameView,UnityEditor");
-            if (gameViewType == null)
-            {
-                return new CaptureResult { Ok = false, Error = "GameView type not found" };
-            }
-            var gameView = EditorWindow.GetWindow(gameViewType, false, null, false);
-            if (gameView == null)
-            {
-                return new CaptureResult { Ok = false, Error = "No Game View window is open" };
-            }
-            gameView.Repaint();
-            var rtField = gameViewType.GetField("m_RenderTexture", BindingFlags.NonPublic | BindingFlags.Instance);
-            var sourceRt = rtField?.GetValue(gameView) as RenderTexture;
+            var lookup = environment.FindTarget();
+            if (!lookup.Ok)
+                return new CaptureResult
+                {
+                    Ok = false,
+                    ErrorCode = lookup.ErrorCode,
+                    Error = lookup.Error
+                };
+
+            lookup.Target.Repaint();
+            var sourceRt = lookup.Target.RenderTexture;
             if (sourceRt == null || !sourceRt.IsCreated())
             {
-                return new CaptureResult { Ok = false, Error = "Game View render texture unavailable" };
+                return new CaptureResult
+                {
+                    Ok = false,
+                    ErrorCode = "game_view_unavailable",
+                    Error = "Game View render texture unavailable"
+                };
             }
 
             int srcW = sourceRt.width, srcH = sourceRt.height;

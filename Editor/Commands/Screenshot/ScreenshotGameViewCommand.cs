@@ -10,7 +10,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
     {
         private const int MinEdge = 64;
         private const int MaxEdge = 4096;
-        private const int DefaultEdge = 1568;
+        private const int DefaultEdge = 1920;
 
         private readonly IGameViewCapturer capturer;
         private readonly string screenshotDir;
@@ -62,7 +62,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
                 return JsonRpcResponse.FromError(request.Id, new JsonRpcError(
                     JsonRpcErrorCodes.InvalidEditorState,
                     capture.Error ?? "Game View is not available.",
-                    JsonRpcSerializer.Object(("errorCode", "invalid_editor_state"))));
+                    JsonRpcSerializer.Object((
+                        "errorCode", capture.ErrorCode ?? "invalid_editor_state"))));
             }
 
             var tex = new Texture2D(capture.Width, capture.Height, TextureFormat.RGB24, false);

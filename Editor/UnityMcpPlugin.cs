@@ -8,6 +8,7 @@ using VeryFS.UnityMCP.Editor.Commands.Console;
 using VeryFS.UnityMCP.Editor.Protocol;
 using VeryFS.UnityMCP.Editor.Commands.Editor;
 using VeryFS.UnityMCP.Editor.Commands.FairyGUI;
+using VeryFS.UnityMCP.Editor.Commands.GameView;
 using VeryFS.UnityMCP.Editor.Commands.Scene;
 using VeryFS.UnityMCP.Editor.Commands.Screenshot;
 using VeryFS.UnityMCP.Editor.Commands.Testing;
@@ -108,8 +109,25 @@ namespace VeryFS.UnityMCP.Editor
             // Ensure the project's server is up (auto-launch / reuse / refuse),
             // then connect only when we own it. Tokens survive Domain Reload.
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+            var gameViewEnvironment = new UnityGameViewEnvironment();
+            var gameViewSettler = new GameViewSettleWaiter(
+                new UnityEditorUpdateAwaiter(), new SystemClock());
+            registry.RegisterGroup(new RpcGroupDefinition
+            {
+                Group = RpcMethods.GameViewGroup,
+                ToolName = "game-view",
+                Title = "Game View",
+                Description = "Inspect or change the current Game View. " +
+                    "action: get-state | list-resolutions | set-resolution | set-maximized."
+            });
+            registry.Register(new GameViewGetStateCommand(gameViewEnvironment));
+            registry.Register(new GameViewListResolutionsCommand(gameViewEnvironment));
+            registry.Register(new GameViewSetResolutionCommand(
+                gameViewEnvironment, gameViewSettler));
+            registry.Register(new GameViewSetMaximizedCommand(
+                gameViewEnvironment, gameViewSettler));
             registry.Register(new ScreenshotGameViewCommand(
-                new UnityGameViewCapturer(),
+                new UnityGameViewCapturer(gameViewEnvironment),
                 Path.Combine(projectRoot, "Temp", "UnityMCP", "screenshots"),
                 new UlidLikeIdGenerator()));
             var panelSource = new FairyGUIPanelSource();

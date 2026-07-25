@@ -50,17 +50,29 @@ Add the following to your project's `Packages/manifest.json`:
 
 #### 交互式 Editor
 
+macOS / Linux（bash）：
+
 ```bash
 HTTPS_PROXY=http://127.0.0.1:7892 NO_PROXY=127.0.0.1,localhost \
 /Applications/Unity/Hub/Editor/<UNITY_VERSION>/Unity.app/Contents/MacOS/Unity \
   -projectPath <PROJECT_PATH> -logFile /tmp/unity-editor.log &
 ```
 
-就绪要 15–25 秒（判据 `health`），关闭用 `pkill -f "Unity.app/Contents/MacOS/Unity"`。**同时只能有一个 Unity 实例**（License 冲突），启动前 `pgrep -fl "Unity.app/Contents/MacOS/Unity"`；有编译错误时会弹模态框卡住就绪，先用 batchmode 验证。
+Windows（PowerShell）：
+
+```powershell
+$env:HTTPS_PROXY = "http://127.0.0.1:7892"; $env:NO_PROXY = "127.0.0.1,localhost"
+Start-Process "C:\Program Files\Unity\Hub\Editor\<UNITY_VERSION>\Editor\Unity.exe" `
+  -ArgumentList "-projectPath <PROJECT_PATH> -logFile C:\temp\unity-editor.log"
+```
+
+就绪要 15–25 秒（判据 `health`）。关闭：macOS/Linux 用 `pkill -f "Unity.app/Contents/MacOS/Unity"`，Windows 用 `taskkill /IM Unity.exe /F`。**同时只能有一个 Unity 实例**（License 冲突），启动前检查：macOS/Linux `pgrep -fl "Unity.app/Contents/MacOS/Unity"`，Windows `tasklist | findstr Unity.exe`；有编译错误时会弹模态框卡住就绪，先用 batchmode 验证。
 
 #### 后备：batchmode CLI
 
-只在没有可用 Editor 会话时用。`<UNITY>` 同上路径，代理变量同样内联。
+只在没有可用 Editor 会话时用。`<UNITY>` 换成上面对应平台的可执行文件路径，代理变量同样内联/前置设置。
+
+macOS / Linux（bash）：
 
 ```bash
 # 编译：看输出有无 error CS
@@ -70,6 +82,18 @@ HTTPS_PROXY=http://127.0.0.1:7892 NO_PROXY=127.0.0.1,localhost \
 <UNITY> -batchmode -nographics -projectPath <PROJECT_PATH> \
   -runTests -testPlatform EditMode -assemblyNames <TEST_ASSEMBLY> \
   -testResults /tmp/editmode-results.xml -logFile -
+```
+
+Windows（PowerShell）：
+
+```powershell
+# 编译：看输出有无 error CS
+& <UNITY> -batchmode -nographics -projectPath <PROJECT_PATH> -logFile - -quit
+
+# 跑测：不能带 -quit；红绿看 XML 头部 total/passed/failed，别 grep 日志
+& <UNITY> -batchmode -nographics -projectPath <PROJECT_PATH> `
+  -runTests -testPlatform EditMode -assemblyNames <TEST_ASSEMBLY> `
+  -testResults C:\temp\editmode-results.xml -logFile -
 ```
 
 ---

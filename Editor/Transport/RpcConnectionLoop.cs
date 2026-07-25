@@ -52,6 +52,10 @@ namespace VeryFS.UnityMCP.Editor.Transport
         // Null means no-op (always continue).
         private readonly Func<bool> ensureServerAlive;
 
+        // Returns true while a Unity test run owns the Editor. Null means no-op
+        // (never blocked). See TestRunGate for the method whitelist.
+        private readonly Func<bool> testsRunning;
+
         public RpcConnectionLoop(
             Uri endpoint,
             RpcCommandRegistry registry,
@@ -61,8 +65,10 @@ namespace VeryFS.UnityMCP.Editor.Transport
             IIdGenerator idGenerator,
             bool ownsDispatcher,
             string bearerToken,
-            Func<bool> ensureServerAlive = null)
+            Func<bool> ensureServerAlive = null,
+            Func<bool> testsRunning = null)
         {
+            this.testsRunning = testsRunning;
             this.ensureServerAlive = ensureServerAlive;
             client = new RpcWebSocketClient(endpoint, bearerToken);
             this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
@@ -463,6 +469,15 @@ namespace VeryFS.UnityMCP.Editor.Transport
                     JsonRpcErrorCodes.MethodNotFound,
                     "Unknown RPC method.",
                     JsonRpcSerializer.Object(("errorCode", "method_not_found")))));
+                return;
+            }
+
+            if (testsRunning != null && testsRunning() && !TestRunGate.IsAllowedDuringTestRun(request.Method))
+            {
+                _ = SendResponseAsync(JsonRpcResponse.FromError(request.Id, new JsonRpcError(
+                    JsonRpcErrorCodes.EditorBusy,
+                    "A Unity test run is in progress.",
+                    JsonRpcSerializer.Object(("errorCode", "tests_running")))));
                 return;
             }
 

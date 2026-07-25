@@ -42,8 +42,8 @@ namespace VeryFS.UnityMCP.Editor.Commands
                 "when it returns an error). Pseudo-command \"wait\" pauses between steps: " +
                 "{\"tool\":\"wait\",\"params\":{\"ms\":500}} or {\"tool\":\"wait\",\"params\":{\"frames\":3}} " +
                 "(ms and frames are mutually exclusive; no upper bound — bound the whole batch via timeoutMs). " +
-                "NOT supported as sub-commands: assets.refresh, editor.application.set-state (long-running), and " +
-                "batch.execute (no nesting).",
+                "NOT supported as sub-commands: assets.refresh, editor.application.set-state, test.run " +
+                "(long-running), and batch.execute (no nesting).",
             Completion = "response",
             FailureMode = "error",
             DefaultTimeoutMs = 300000,

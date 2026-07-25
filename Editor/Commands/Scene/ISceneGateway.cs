@@ -34,6 +34,13 @@ namespace VeryFS.UnityMCP.Editor.Commands.Scene
         public bool Success { get; }
     }
 
+    public readonly struct DirtyScene
+    {
+        public DirtyScene(string name, string path) { Name = name; Path = path; }
+        public string Name { get; }
+        public string Path { get; }
+    }
+
     // 包装 EditorSceneManager (编辑期), 便于 stub 测。
     public interface ISceneGateway
     {
@@ -44,5 +51,6 @@ namespace VeryFS.UnityMCP.Editor.Commands.Scene
         string ActiveScenePath { get; }
         OpenResult OpenSingle(string path);           // EditorSceneManager.OpenScene(path, Single)
         SaveResult SaveActive();                      // EditorSceneManager.SaveScene(activeScene)
+        IReadOnlyList<DirtyScene> GetDirtyLoadedScenes();   // 所有已加载且 isDirty 的场景
     }
 }

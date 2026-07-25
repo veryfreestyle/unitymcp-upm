@@ -10,6 +10,7 @@ using VeryFS.UnityMCP.Editor.Commands.Editor;
 using VeryFS.UnityMCP.Editor.Commands.FairyGUI;
 using VeryFS.UnityMCP.Editor.Commands.Scene;
 using VeryFS.UnityMCP.Editor.Commands.Screenshot;
+using VeryFS.UnityMCP.Editor.Commands.Testing;
 using VeryFS.UnityMCP.Editor.Infrastructure;
 using VeryFS.UnityMCP.Editor.Lifecycle;
 using VeryFS.UnityMCP.Editor.Logs;
@@ -26,6 +27,14 @@ namespace VeryFS.UnityMCP.Editor
         private static readonly RpcCommandRegistry registry;
         // Field retained to prevent GC of production connection loop
         private static RpcConnectionLoop productionLoop;
+        private static TestRunTracker testRunTracker;
+        private static TestRunCommand testRunCommand;
+        // Main-thread mirror of testRunTracker.IsRunning, read by the transport thread's
+        // test-run gate. The tracker is backed by SessionState, which throws
+        // "can only be called from the main thread" off the main thread -- and that
+        // exception would be swallowed in OnMessageReceived, leaving every inbound
+        // request without a response. One frame of staleness is the acceptable price.
+        private static volatile bool testRunInProgress;
 
         static UnityMcpPlugin()
         {
@@ -65,6 +74,34 @@ namespace VeryFS.UnityMCP.Editor
             catch (Exception ex)
             {
                 UnityEngine.Debug.LogWarning("Unity MCP: console wiring failed. " + ex.Message);
+            }
+            // Test Runner: 长任务命令 + 只读状态查询。两者都是独立工具, 不进聚合组
+            // (P9 划定: 长任务不进组)。包在 try 里, 装配失败不能拖垮 [InitializeOnLoad]。
+            try
+            {
+                var testTracker = new TestRunTracker(new SessionStateTestRunStore(), new SystemClock());
+                var testCommand = new TestRunCommand(
+                    new UnityTestRunner(),
+                    new UnityEditorBusyState(),
+                    new UnityPlayModeController(),
+                    new UnitySceneGateway(),
+                    testTracker,
+                    pendingRequestStore,
+                    new SystemClock());
+                // 字段赋值和 update 订阅必须排在两个 Register 前面: 万一下面
+                // TestStatusCommand 的构造抛异常, test-run 依然会被注册成可调用命令,
+                // 但 Tick() 的驱动和 gate 读的 testRunInProgress 镜像字段不能因此漏挂 ——
+                // 否则 init 超时永远不触发, gate 标志也永远不刷新。
+                testRunTracker = testTracker;
+                testRunCommand = testCommand;
+                EditorApplication.update += OnEditorUpdate;
+                registry.Register(testCommand);
+                registry.Register(new TestStatusCommand(
+                    testTracker, new UnityEditorBusyState(), new UnityEditorFocusState(), new SystemClock()));
+            }
+            catch (Exception ex)
+            {
+                UnityEngine.Debug.LogWarning("Unity MCP: test runner wiring failed. " + ex.Message);
             }
             // RpcConnectionLoop.StartAsync loads and recovers pending records after registration.
 
@@ -183,10 +220,20 @@ namespace VeryFS.UnityMCP.Editor
                         UnityEngine.Debug.LogWarning("Unity MCP: server re-launch refused, stopping reconnect. " + result.Reason);
                     }
                     return result.ShouldConnect;
-                });
+                },
+                testsRunning: () => testRunInProgress);
             _ = productionLoop.StartAsync();
 
             EditorApplication.quitting += OnEditorQuitting;
+        }
+
+        // Main thread. Refreshes the test-run flag before Tick so an exception thrown out
+        // of Tick can never starve the refresh and freeze the gate on a stale value; then
+        // lets the test command check its own init timeout.
+        private static void OnEditorUpdate()
+        {
+            testRunInProgress = testRunTracker != null && testRunTracker.IsRunning;
+            testRunCommand?.Tick();
         }
 
         private static void OnEditorQuitting()

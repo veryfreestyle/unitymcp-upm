@@ -4,7 +4,8 @@
     "references": [
         "FairyGUI",
         "LitJson",
-        "UniTask"
+        "UniTask",
+        "UnityEditor.TestRunner"
     ],
     "includePlatforms": [
         "Editor"

@@ -30,6 +30,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         private readonly ISceneGateway scenes;
         private readonly TestRunTracker tracker;
         private readonly PendingRequestStore store;
+        private readonly IEditorActivator activator;
         private readonly IClock clock;
 
         // 当前在飞的 requestId。只用于 Tick 的 init 超时检查, 不需要跨 domain reload
@@ -54,6 +55,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             ISceneGateway scenes,
             TestRunTracker tracker,
             PendingRequestStore store,
+            IEditorActivator activator,
             IClock clock)
         {
             this.runner = runner ?? throw new ArgumentNullException(nameof(runner));
@@ -62,6 +64,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             this.scenes = scenes ?? throw new ArgumentNullException(nameof(scenes));
             this.tracker = tracker ?? throw new ArgumentNullException(nameof(tracker));
             this.store = store ?? throw new ArgumentNullException(nameof(store));
+            this.activator = activator ?? throw new ArgumentNullException(nameof(activator));
             this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
         }
 
@@ -234,6 +237,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
                 RejectConcurrent(requestId);
                 return;
             }
+
+            activator.ActivateIfNeeded();
 
             var target = JsonMapper.ToObject(entry.TargetState);
             var filter = new TestRunFilter

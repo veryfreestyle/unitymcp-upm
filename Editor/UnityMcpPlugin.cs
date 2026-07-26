@@ -91,6 +91,7 @@ namespace VeryFS.UnityMCP.Editor
                     new UnitySceneGateway(),
                     testTracker,
                     pendingRequestStore,
+                    new UnityEditorActivator(),
                     new SystemClock());
                 // 字段赋值和 update 订阅必须排在两个 Register 前面: 万一下面
                 // TestStatusCommand 的构造抛异常, test-run 依然会被注册成可调用命令,

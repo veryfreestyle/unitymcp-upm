@@ -16,6 +16,17 @@ namespace VeryFS.UnityMCP.Editor.Commands
         void Refresh();
     }
 
+    internal interface ICompilationTracker
+    {
+        void Configure(PendingRequestStore requestStore, IClock requestClock, ICurrentCompilerErrors requestCompilerErrors = null);
+
+        void StartTracking(string originRequestId);
+
+        void StopTracking(string originRequestId);
+
+        void ScheduleCompletion();
+    }
+
     public interface IEditorBusyState
     {
         bool IsCompiling { get; }
@@ -31,24 +42,50 @@ namespace VeryFS.UnityMCP.Editor.Commands
         }
     }
 
+    internal sealed class UnityCompilationTracker : ICompilationTracker
+    {
+        public void Configure(PendingRequestStore requestStore, IClock requestClock, ICurrentCompilerErrors requestCompilerErrors = null)
+        {
+            CompilationTracker.Configure(requestStore, requestClock, requestCompilerErrors);
+        }
+
+        public void StartTracking(string originRequestId)
+        {
+            CompilationTracker.StartTracking(originRequestId);
+        }
+
+        public void StopTracking(string originRequestId)
+        {
+            CompilationTracker.StopTracking(originRequestId);
+        }
+
+        public void ScheduleCompletion()
+        {
+            CompilationTracker.ScheduleCompletion();
+        }
+    }
+
     internal sealed class AssetsRefreshCommand : ILongRunningCommand
     {
         private readonly IAssetDatabase assetDatabase;
         private readonly IEditorBusyState editorBusyState;
         private readonly PendingRequestStore store;
         private readonly IClock clock;
+        private readonly ICompilationTracker compilationTracker;
 
         public AssetsRefreshCommand(
             IAssetDatabase assetDatabase,
             IEditorBusyState editorBusyState,
             PendingRequestStore store,
-            IClock clock)
+            IClock clock,
+            ICompilationTracker compilationTracker = null)
         {
             this.assetDatabase = assetDatabase;
             this.editorBusyState = editorBusyState;
             this.store = store;
             this.clock = clock;
-            CompilationTracker.Configure(store, clock, new ConsoleCompilerErrors());
+            this.compilationTracker = compilationTracker ?? new UnityCompilationTracker();
+            ConfigureCompilationTracker();
         }
 
         public string Method => RpcMethods.AssetsRefresh;
@@ -58,16 +95,14 @@ namespace VeryFS.UnityMCP.Editor.Commands
             Name = "assets-refresh",
             RpcMethod = RpcMethods.AssetsRefresh,
             Title = "Assets / Refresh",
-            Description = "Trigger AssetDatabase.Refresh() and wait for the terminal compilation report.",
+            Description = "Trigger AssetDatabase.Refresh() with empty params and wait for the terminal compilation report.",
             Completion = "report",
             FailureMode = "data",
             DefaultTimeoutMs = 120000,
             InputSchema = JsonRpcSerializer.Object(
                 ("type", "object"),
                 ("additionalProperties", false),
-                ("properties", JsonRpcSerializer.Object(
-                    ("timeoutMs", JsonRpcSerializer.Object(
-                        ("type", "integer"), ("minimum", 1000), ("maximum", 600000))))))
+                ("properties", JsonRpcSerializer.Object()))
         };
 
         public JsonData BuildReportParams(PendingRefreshRequest entry)
@@ -101,7 +136,8 @@ namespace VeryFS.UnityMCP.Editor.Commands
                     return;
                 }
 
-                CompilationTracker.StartTracking(entry.OriginRequestId);
+                ConfigureCompilationTracker();
+                compilationTracker.StartTracking(entry.OriginRequestId);
                 // Resume via the same idle-poll path used by ExecuteAccepted. We must NOT
                 // build the terminal report immediately even when the editor looks idle:
                 // a recovered refresh may have triggered no compilation at all (e.g. no
@@ -109,7 +145,7 @@ namespace VeryFS.UnityMCP.Editor.Commands
                 // what distinguishes "genuinely nothing to compile" from "compilation is
                 // about to start". If compilation did run before the reload, the persisted
                 // CompilationTriggered flag makes CompleteWhenIdle settle on the next tick.
-                CompilationTracker.ScheduleCompletion();
+                compilationTracker.ScheduleCompletion();
             }
         }
 
@@ -178,9 +214,10 @@ namespace VeryFS.UnityMCP.Editor.Commands
 
                 request.ExecutionState = "refresh_started";
                 store.Save(request);
-                CompilationTracker.StartTracking(requestId);
+                ConfigureCompilationTracker();
+                compilationTracker.StartTracking(requestId);
+                compilationTracker.ScheduleCompletion();
                 assetDatabase.Refresh();
-                CompilationTracker.ScheduleCompletion();
             }
             catch
             {
@@ -192,7 +229,7 @@ namespace VeryFS.UnityMCP.Editor.Commands
 
                 RefreshResultBuilder.MarkRefreshFailed(request, clock.UtcNow.ToString("O"));
                 store.Save(request);
-                CompilationTracker.StopTracking(requestId);
+                compilationTracker.StopTracking(requestId);
             }
         }
 
@@ -206,7 +243,13 @@ namespace VeryFS.UnityMCP.Editor.Commands
 
             RefreshResultBuilder.MarkRefreshFailed(request, clock.UtcNow.ToString("O"), "refresh_not_executed");
             store.Save(request);
-            CompilationTracker.StopTracking(requestId);
+            ConfigureCompilationTracker();
+            compilationTracker.StopTracking(requestId);
+        }
+
+        private void ConfigureCompilationTracker()
+        {
+            compilationTracker.Configure(store, clock, new ConsoleCompilerErrors());
         }
 
         private static bool HasEmptyObjectParams(JsonData @params)

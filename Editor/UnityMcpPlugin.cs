@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using LitJson;
 using UnityEditor;
 using UnityEngine;
 using UnityMCP.Editor.Infrastructure;
 using VeryFS.UnityMCP.Editor.Commands;
+using VeryFS.UnityMCP.Editor.Commands.AgentSkill;
 using VeryFS.UnityMCP.Editor.Commands.Console;
 using VeryFS.UnityMCP.Editor.Protocol;
 using VeryFS.UnityMCP.Editor.Commands.Editor;
@@ -187,6 +190,10 @@ namespace VeryFS.UnityMCP.Editor
             registry.Register(new GameObjectComponentGetCommand(new UnityEditorBusyState(), new UnityGameObjectLocator()));
             registry.Register(new BatchExecuteCommand(
                 registry, new UniTaskFrameStepper(), new UniTaskDelayProvider()));
+            AgentSkillRegistration.Register(
+                registry,
+                projectRoot,
+                Application.unityVersion);
             int port = ProjectPortCalculator.GetPort(projectRoot);
             ServerTokens tokens = TokenStore.GetOrCreate();
             int editorPid = System.Diagnostics.Process.GetCurrentProcess().Id;
@@ -262,6 +269,29 @@ namespace VeryFS.UnityMCP.Editor
             productionLoop?.Dispose();
         }
 
+        internal static string InstallAgentSkillForMonitor(IReadOnlyList<string> clients, bool overwrite)
+        {
+            if (!registry.TryGet(RpcMethods.AgentSkillInstall, out var command))
+            {
+                throw new InvalidOperationException("install-agent-skill is not registered.");
+            }
+
+            var response = command.Handle(JsonRpcRequest.Create(
+                "server-monitor-install-agent-skill",
+                RpcMethods.AgentSkillInstall,
+                JsonRpcSerializer.Object(
+                    ("name", "unitymcp"),
+                    ("clients", StringArray(clients)),
+                    ("overwrite", overwrite))));
+
+            if (response.Error != null)
+            {
+                throw new InvalidOperationException(response.Error.Message);
+            }
+
+            return "Installed UnityMCP agent skill.";
+        }
+
         internal static RpcConnectionLoop StartForTests(string url)
         {
             var testDispatcher = new EditorMainThreadDispatcher();
@@ -276,6 +306,17 @@ namespace VeryFS.UnityMCP.Editor
                 null);
             _ = loop.StartAsync();
             return loop;
+        }
+
+        private static JsonData StringArray(IReadOnlyList<string> values)
+        {
+            var result = new JsonData();
+            result.SetJsonType(JsonType.Array);
+            foreach (string value in values)
+            {
+                result.Add(value);
+            }
+            return result;
         }
     }
 }

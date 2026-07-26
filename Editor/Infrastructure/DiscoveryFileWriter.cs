@@ -18,9 +18,12 @@ namespace VeryFS.UnityMCP.Editor.Infrastructure
         public const string McpConfigFileName = ".mcp.json";
         public const string CodexConfigDirectoryName = ".codex";
         public const string CodexConfigFileName = "config.toml";
+        public const string OpenCodeConfigDirectoryName = ".opencode";
+        public const string OpenCodeConfigFileName = "opencode.json";
         public const string McpServerName = "very-unity-mcp";
         public const int ProtocolVersion = 1;
         private const string LegacyMcpServerName = "unity-mcp";
+        private const string OpenCodeSchema = "https://opencode.ai/config.json";
         private const string CodexManagedBlockStart = "# <very-unity-mcp-codex-config>";
         private const string CodexManagedBlockEnd = "# </very-unity-mcp-codex-config>";
         private const string LegacyCodexManagedBlockStart = "# <unity-mcp-codex-config>";
@@ -37,6 +40,11 @@ namespace VeryFS.UnityMCP.Editor.Infrastructure
         /// so the client token stays in sync.
         /// </summary>
         public static string Write(string projectRoot, DiscoveryDocument doc)
+        {
+            return Write(projectRoot, doc, McpClientTarget.All);
+        }
+
+        public static string Write(string projectRoot, DiscoveryDocument doc, McpClientTarget targets)
         {
             if (string.IsNullOrEmpty(projectRoot))
             {
@@ -65,29 +73,70 @@ namespace VeryFS.UnityMCP.Editor.Infrastructure
             File.WriteAllText(path, root.ToJson());
             RestrictToOwner(path);
 
-            WriteMcpConfig(projectRoot, doc.ServerUrl, doc.ClientToken);
-            WriteCodexConfig(projectRoot, doc.ServerUrl, doc.ClientToken);
+            if ((targets & McpClientTarget.Claude) != 0)
+            {
+                WriteMcpConfig(projectRoot, doc.ServerUrl, doc.ClientToken);
+            }
+            else
+            {
+                RemoveMcpConfig(projectRoot);
+            }
+
+            if ((targets & McpClientTarget.Codex) != 0)
+            {
+                WriteCodexConfig(projectRoot, doc.ServerUrl, doc.ClientToken);
+            }
+            else
+            {
+                RemoveCodexConfig(projectRoot);
+            }
+
+            if ((targets & McpClientTarget.OpenCode) != 0)
+            {
+                WriteOpenCodeConfig(projectRoot, doc.ServerUrl, doc.ClientToken);
+            }
+            else
+            {
+                RemoveOpenCodeConfig(projectRoot);
+            }
 
             return path;
         }
 
         private static void WriteMcpConfig(string projectRoot, string serverUrl, string clientToken)
         {
-            var headers = new JsonData();
-            headers["Authorization"] = "Bearer " + clientToken;
-
-            var serverEntry = new JsonData();
-            serverEntry["type"] = "http";
-            serverEntry["url"] = serverUrl;
-            serverEntry["headers"] = headers;
-
-            var servers = new JsonData();
-            servers[McpServerName] = serverEntry;
-
-            var config = new JsonData();
-            config["mcpServers"] = servers;
-
             var mcpPath = Path.Combine(projectRoot, McpConfigFileName);
+            JsonData config = ReadJsonObjectOrNew(mcpPath);
+            if (config == null)
+            {
+                return;
+            }
+
+            JsonData servers = EnsureObject(config, "mcpServers");
+            RemoveUnityMcpJsonEntries(servers);
+            servers[McpServerName] = McpServerEntry(serverUrl, clientToken);
+
+            File.WriteAllText(mcpPath, config.ToJson());
+        }
+
+        private static void RemoveMcpConfig(string projectRoot)
+        {
+            var mcpPath = Path.Combine(projectRoot, McpConfigFileName);
+            if (!File.Exists(mcpPath))
+            {
+                return;
+            }
+
+            JsonData config = ReadJsonObjectOrNew(mcpPath);
+            if (config == null)
+            {
+                return;
+            }
+
+            if (config.ContainsKey("mcpServers") && config["mcpServers"].IsObject)
+            {
+                RemoveUnityMcpJsonEntries(config["mcpServers"]);
+            }
             File.WriteAllText(mcpPath, config.ToJson());
         }
 
@@ -122,6 +171,131 @@ namespace VeryFS.UnityMCP.Editor.Infrastructure
             builder.AppendLine(CodexManagedBlockEnd);
 
             File.WriteAllText(codexPath, builder.ToString());
+        }
+
+        private static void RemoveCodexConfig(string projectRoot)
+        {
+            var codexPath = Path.Combine(projectRoot, CodexConfigDirectoryName, CodexConfigFileName);
+            if (!File.Exists(codexPath))
+            {
+                return;
+            }
+
+            string withoutUnityMcp = RemoveUnityMcpConfig(File.ReadAllText(codexPath)).TrimEnd();
+            File.WriteAllText(codexPath, string.IsNullOrEmpty(withoutUnityMcp)
+                ? string.Empty
+                : withoutUnityMcp + Environment.NewLine);
+        }
+
+        private static void WriteOpenCodeConfig(string projectRoot, string serverUrl, string clientToken)
+        {
+            var openCodeDir = Path.Combine(projectRoot, OpenCodeConfigDirectoryName);
+            Directory.CreateDirectory(openCodeDir);
+
+            var openCodePath = Path.Combine(openCodeDir, OpenCodeConfigFileName);
+            JsonData config = ReadJsonObjectOrNew(openCodePath);
+            if (config == null)
+            {
+                return;
+            }
+
+            config["$schema"] = OpenCodeSchema;
+            JsonData servers = EnsureObject(config, "mcp");
+            RemoveUnityMcpJsonEntries(servers);
+            servers[McpServerName] = OpenCodeServerEntry(serverUrl, clientToken);
+            File.WriteAllText(openCodePath, config.ToJson());
+        }
+
+        private static void RemoveOpenCodeConfig(string projectRoot)
+        {
+            var openCodePath = Path.Combine(projectRoot, OpenCodeConfigDirectoryName, OpenCodeConfigFileName);
+            if (!File.Exists(openCodePath))
+            {
+                return;
+            }
+
+            JsonData config = ReadJsonObjectOrNew(openCodePath);
+            if (config == null)
+            {
+                return;
+            }
+
+            if (config.ContainsKey("mcp") && config["mcp"].IsObject)
+            {
+                RemoveUnityMcpJsonEntries(config["mcp"]);
+            }
+            File.WriteAllText(openCodePath, config.ToJson());
+        }
+
+        private static JsonData OpenCodeServerEntry(string serverUrl, string clientToken)
+        {
+            var headers = new JsonData();
+            headers["Authorization"] = "Bearer " + clientToken;
+
+            var serverEntry = new JsonData();
+            serverEntry["type"] = "remote";
+            serverEntry["url"] = serverUrl;
+            serverEntry["enabled"] = true;
+            serverEntry["oauth"] = false;
+            serverEntry["headers"] = headers;
+            return serverEntry;
+        }
+
+        private static JsonData McpServerEntry(string serverUrl, string clientToken)
+        {
+            var headers = new JsonData();
+            headers["Authorization"] = "Bearer " + clientToken;
+
+            var serverEntry = new JsonData();
+            serverEntry["type"] = "http";
+            serverEntry["url"] = serverUrl;
+            serverEntry["headers"] = headers;
+            return serverEntry;
+        }
+
+        private static JsonData ReadJsonObjectOrNew(string path)
+        {
+            if (!File.Exists(path))
+            {
+                var result = new JsonData();
+                result.SetJsonType(JsonType.Object);
+                return result;
+            }
+
+            try
+            {
+                JsonData parsed = JsonMapper.ToObject(File.ReadAllText(path));
+                return parsed != null && parsed.IsObject ? parsed : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private static JsonData EnsureObject(JsonData parent, string key)
+        {
+            if (parent.ContainsKey(key) && parent[key] != null && parent[key].IsObject)
+            {
+                return parent[key];
+            }
+
+            var child = new JsonData();
+            child.SetJsonType(JsonType.Object);
+            parent[key] = child;
+            return child;
+        }
+
+        private static void RemoveUnityMcpJsonEntries(JsonData servers)
+        {
+            if (servers.ContainsKey(McpServerName))
+            {
+                servers.Remove(McpServerName);
+            }
+            if (servers.ContainsKey(LegacyMcpServerName))
+            {
+                servers.Remove(LegacyMcpServerName);
+            }
         }
 
         private static string RemoveUnityMcpConfig(string text)

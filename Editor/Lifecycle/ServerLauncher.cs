@@ -114,7 +114,7 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
                 Port = port,
                 ServerUrl = "http://127.0.0.1:" + port + "/mcp",
                 ClientToken = tokens.ClientToken
-            });
+            }, McpClientIntegrationPreferences.Load(projectRoot));
         }
 
         /// <summary>Wires the production prober + spawner + binary resolver.</summary>

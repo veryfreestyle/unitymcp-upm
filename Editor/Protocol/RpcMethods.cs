@@ -31,6 +31,7 @@ namespace VeryFS.UnityMCP.Editor.Protocol
         public const string EditorSceneOpen = "editor.scene.open";
         public const string EditorSceneSave = "editor.scene.save";
         public const string BatchExecute = "batch.execute";
+        public const string AgentSkillInstall = "agent.skill.install";
         public const string TestRun = "test.run";
         public const string TestStatus = "test.status";
         public const string GameViewGetState = "game-view.get-state";

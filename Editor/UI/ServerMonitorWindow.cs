@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using UnityEditor;
@@ -18,6 +19,8 @@ namespace VeryFS.UnityMCP.Editor.UI
     {
         private const double PollIntervalSeconds = 3.0;
         private const string ExpectedBinaryName = "unity-mcp-server";
+        private const float AgentClientNameColumnWidth = 120;
+        private const float AgentClientStatusColumnWidth = 84;
 
         private readonly ServerMonitorState state = new ServerMonitorState();
         private readonly IServerHealthClient healthClient = new HttpServerHealthClient();
@@ -27,6 +30,7 @@ namespace VeryFS.UnityMCP.Editor.UI
         private string projectRoot;
         private int port;
         private string clientToken;
+        private ServerMonitorIntegrationController integrationController;
 
         private double nextPollAt;
         private volatile bool pollInFlight;
@@ -50,6 +54,16 @@ namespace VeryFS.UnityMCP.Editor.UI
             projectRoot = Directory.GetParent(Application.dataPath).FullName;
             port = ProjectPortCalculator.GetPort(projectRoot);
             clientToken = TokenStore.GetOrCreate().ClientToken;
+            integrationController = new ServerMonitorIntegrationController(
+                projectRoot,
+                BuildDiscoveryDocument,
+                new VeryFS.UnityMCP.Editor.Commands.AgentSkill.AgentSkillFileStore(
+                    new VeryFS.UnityMCP.Editor.Commands.AgentSkill.SystemAgentSkillFileSystem(),
+                    new UlidLikeIdGenerator(),
+                    Application.platform == RuntimePlatform.WindowsEditor
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal),
+                VeryFS.UnityMCP.Editor.UnityMcpPlugin.InstallAgentSkillForMonitor);
             nextPollAt = 0; // poll immediately on first update
             EditorApplication.update += OnUpdate;
         }
@@ -127,6 +141,9 @@ namespace VeryFS.UnityMCP.Editor.UI
             EditorGUILayout.Space();
             DrawButtons();
 
+            EditorGUILayout.Space();
+            DrawAgentClients();
+
             if (!string.IsNullOrEmpty(lastActionMessage))
             {
                 EditorGUILayout.Space();
@@ -186,6 +203,155 @@ namespace VeryFS.UnityMCP.Editor.UI
             }
         }
 
+        private void DrawAgentClients()
+        {
+            EditorGUILayout.LabelField("Agent Clients", EditorStyles.boldLabel);
+
+            AgentClientIntegrationSnapshot snapshot = integrationController.ReadStatuses();
+            DrawAgentConfigHeader();
+            DrawClientConfigRow(snapshot, McpClientTargets.Claude, "Claude");
+            DrawClientConfigRow(snapshot, McpClientTargets.Codex, "Codex");
+            DrawClientConfigRow(snapshot, McpClientTargets.OpenCode, "OpenCode");
+
+            using (new EditorGUI.DisabledScope(snapshot.EnabledTargets == McpClientTarget.None))
+            {
+                if (GUILayout.Button("Install Agent Skill", GUILayout.Width(160)))
+                {
+                    OnInstallAgentSkill(snapshot);
+                }
+            }
+
+            EditorGUILayout.Space(2);
+            DrawSkillRow("Claude/Codex", SharedAgentsSkillStatus(snapshot));
+            DrawSkillRow("OpenCode", FindStatus(snapshot, McpClientTargets.OpenCode));
+        }
+
+        private static void DrawAgentConfigHeader()
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Space(AgentClientNameColumnWidth);
+                GUILayout.Label("Config", EditorStyles.miniBoldLabel, GUILayout.Width(AgentClientStatusColumnWidth));
+            }
+        }
+
+        private void DrawClientConfigRow(AgentClientIntegrationSnapshot snapshot, string client, string label)
+        {
+            AgentClientStatus status = FindStatus(snapshot, client);
+            if (status == null)
+            {
+                return;
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                bool nextEnabled = EditorGUILayout.ToggleLeft(
+                    label, status.Enabled, GUILayout.Width(AgentClientNameColumnWidth));
+                DrawStatusCell(
+                    ConfigStatusText(status.ConfigStatus),
+                    status.ConfigStatus == AgentClientConfigStatus.Current,
+                    status.ConfigStatus == AgentClientConfigStatus.Off,
+                    AgentClientStatusPresentation.ConfigPathLabel(status, projectRoot));
+
+                if (nextEnabled != status.Enabled)
+                {
+                    McpClientTarget nextTargets = SetTarget(snapshot.EnabledTargets, ClientTarget(client), nextEnabled);
+                    AgentClientActionResult result = integrationController.ApplyTargets(nextTargets);
+                    lastActionMessage = result.Message;
+                    Repaint();
+                }
+            }
+        }
+
+        private void DrawSkillRow(string label, AgentClientStatus status)
+        {
+            AgentClientSkillStatus skillStatus = status == null ? AgentClientSkillStatus.Off : status.SkillStatus;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Label(label, GUILayout.Width(AgentClientNameColumnWidth));
+                DrawStatusCell(
+                    skillStatus.ToString(),
+                    skillStatus == AgentClientSkillStatus.Installed,
+                    skillStatus == AgentClientSkillStatus.Off,
+                    AgentClientStatusPresentation.SkillPathLabel(status, projectRoot));
+            }
+        }
+
+        private static string ConfigStatusText(AgentClientConfigStatus status)
+        {
+            return status == AgentClientConfigStatus.Current ? "OK" : status.ToString();
+        }
+
+        private static void DrawStatusCell(string text, bool isOk, bool isOff, string pathLabel)
+        {
+            Color previous = GUI.color;
+            GUI.color = StatusColor(isOk, isOff);
+            GUILayout.Label(text, GUILayout.Width(AgentClientStatusColumnWidth));
+            GUI.color = previous;
+            if (!string.IsNullOrEmpty(pathLabel))
+            {
+                GUILayout.Label(pathLabel);
+            }
+        }
+
+        private static Color StatusColor(bool isOk, bool isOff)
+        {
+            if (isOk)
+            {
+                return Color.green;
+            }
+            return isOff ? Color.gray : Color.red;
+        }
+
+        private static AgentClientStatus SharedAgentsSkillStatus(AgentClientIntegrationSnapshot snapshot)
+        {
+            AgentClientStatus claude = FindStatus(snapshot, McpClientTargets.Claude);
+            AgentClientStatus codex = FindStatus(snapshot, McpClientTargets.Codex);
+            if (claude != null && claude.Enabled)
+            {
+                return claude;
+            }
+            if (codex != null && codex.Enabled)
+            {
+                return codex;
+            }
+            return null;
+        }
+
+        private void OnInstallAgentSkill(AgentClientIntegrationSnapshot snapshot)
+        {
+            IReadOnlyList<string> customPaths = snapshot.EnabledCustomSkillPaths();
+            bool allowOverwrite = true;
+            if (customPaths.Count > 0)
+            {
+                allowOverwrite = EditorUtility.DisplayDialog(
+                    "Overwrite Custom Skill?",
+                    "The enabled clients include custom skill files:\n\n" +
+                    string.Join("\n", customPaths) +
+                    "\n\nOverwrite them with the generated UnityMCP skill?",
+                    "Overwrite",
+                    "Cancel");
+            }
+
+            AgentClientActionResult result = integrationController.InstallEnabledSkills(allowOverwrite);
+            lastActionMessage = result.Message;
+            Repaint();
+        }
+
+        private DiscoveryDocument BuildDiscoveryDocument()
+        {
+            return new DiscoveryDocument
+            {
+                ProjectPath = projectRoot,
+                EditorPid = System.Diagnostics.Process.GetCurrentProcess().Id,
+                EditorSessionId = EditorSession.Current.EditorSessionId,
+                ServerPid = ResolvePid(),
+                Port = port,
+                ServerUrl = "http://127.0.0.1:" + port + "/mcp",
+                ClientToken = clientToken
+            };
+        }
+
         private void OnKill()
         {
             int pid = ResolvePid();
@@ -212,6 +378,71 @@ namespace VeryFS.UnityMCP.Editor.UI
             return ServerPidResolver.Resolve(
                 ServerPidHolder.Get,
                 () => DiscoveryPidReader.ReadServerPid(projectRoot));
+        }
+
+        private static AgentClientStatus FindStatus(AgentClientIntegrationSnapshot snapshot, string client)
+        {
+            foreach (AgentClientStatus status in snapshot.Clients)
+            {
+                if (status.Client == client)
+                {
+                    return status;
+                }
+            }
+
+            return null;
+        }
+
+        private static McpClientTarget ClientTarget(string client)
+        {
+            if (client == McpClientTargets.Claude)
+            {
+                return McpClientTarget.Claude;
+            }
+            if (client == McpClientTargets.Codex)
+            {
+                return McpClientTarget.Codex;
+            }
+            return McpClientTarget.OpenCode;
+        }
+
+        private static McpClientTarget SetTarget(McpClientTarget targets, McpClientTarget target, bool enabled)
+        {
+            return enabled ? targets | target : targets & ~target;
+        }
+    }
+
+    internal static class AgentClientStatusPresentation
+    {
+        public static string ConfigPathLabel(AgentClientStatus status, string projectRoot)
+        {
+            return status != null && status.ConfigStatus == AgentClientConfigStatus.Current
+                ? ProjectRelativePath(projectRoot, status.ConfigPath)
+                : string.Empty;
+        }
+
+        public static string SkillPathLabel(AgentClientStatus status, string projectRoot)
+        {
+            return status != null && status.SkillStatus == AgentClientSkillStatus.Installed
+                ? ProjectRelativePath(projectRoot, status.SkillPath)
+                : string.Empty;
+        }
+
+        private static string ProjectRelativePath(string projectRoot, string path)
+        {
+            if (string.IsNullOrEmpty(projectRoot) || string.IsNullOrEmpty(path))
+            {
+                return string.Empty;
+            }
+
+            string root = Path.GetFullPath(projectRoot).TrimEnd(
+                Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string fullPath = Path.GetFullPath(path);
+            if (fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            {
+                return fullPath.Substring(root.Length).Replace('\\', '/');
+            }
+            return fullPath.Replace('\\', '/');
         }
     }
 }

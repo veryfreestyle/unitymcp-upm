@@ -32,6 +32,8 @@ Add the following to your project's `Packages/manifest.json`:
 2. 在 `Agent Clients` 区域勾选需要配置的客户端。默认启用 `Claude` 和 `Codex`，`OpenCode` 默认关闭，需要时手动开启。
 3. 点击 `Install Agent Skill`，为已启用客户端安装或更新 `unitymcp` skill。
 
+![UnityMCP window](monitor.jpg)
+
 UI 会按勾选项维护这些项目内文件：
 
 - MCP 配置：`.mcp.json`、`.codex/config.toml`、`.opencode/opencode.json`

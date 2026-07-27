@@ -1,6 +1,36 @@
 # VeryFS UnityMCP
 
-Exposes Unity Editor functionality via [Model Context Protocol (MCP)](https://modelcontextprotocol.io), enabling AI tools to interact with the Unity Editor directly.
+通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 暴露 Unity Editor 能力，让 AI 直接操作编辑器。完整工具链由 Unity Editor 插件和外部 Go server 两部分组成。
+
+16 个工具：编译反馈、Console 日志、场景与 GameObject 查询、Game View 控制与截图、Test Runner 跑测、FairyGUI 交互闭环、批量执行。UPM 分发，Claude / Codex / OpenCode 一键接入。Unity 2021.3+，Mac / Windows 双平台。
+
+## 设计理念
+
+目标是让 AI 一次指令就跑完整个 TDD 循环：先写测试，确认它失败，再实现到它通过，中途不用人插手。跑一次测试能直接拿到结果概要和全部失败详情，编译错误也是可解析的结构，FairyGUI 界面同样能写断言。
+
+没人在旁边复核，结果就得自己站得住。
+
+**不允许假通过。** 筛选条件一个都没匹配上直接报错，不接受「跑了零个测试、零个失败」。测试没过不算调用出错，两件事分开返回。
+
+**不靠等待猜时机。** 写操作做完立刻返回，不等动画播完。要确认结果就单独查一次状态，这些状态在动画开始时就定了。
+
+**定位方式可复现。** 查找对象只认名字和路径，不读编辑器当前选中了什么。换时间、换机器跑，结果一样。
+
+**出问题不能把自己卡死。** 启动没反应、总时长超限、断线丢回调，三种都有超时兜底，不会永远停在「正在跑测试」。断线重连后补发没送达的结果。
+
+**会改东西的操作先划清边界。** 怎么定位、能不能撤销、失败会不会留半成品、拿什么确认，动手前先写清楚。说不清就不做。动态编译执行 C# 代码、读写删除脚本文件默认不提供。
+
+**工具列表要短。** 列表越长越容易挑错，也更占上下文。同类操作合成一个，用参数区分动作，对外只留十几个。
+
+## FairyGUI UI 自动化测试
+
+FairyGUI 的界面元素是独立的 GObject 树，不挂 GameObject，通用 GameObject 查询无法覆盖。本项目提供专用通道，支持对 FairyGUI 界面做完整的 UI 自动化测试：
+
+- **直接设置状态**：单帧同步设数值、选中项、滚动位置、控制器页码，用于构造断言前置条件。
+- **模拟真实操作**：逐帧驱动 press → move → release，走完整事件派发，触发 `onChanged` / `onDragXxx` 等真实回调。
+- **读取界面状态**：返回按钮选中态、列表选中项、滑块值、滚动位置等控件语义状态，供断言。
+
+三者构成「构造 → 操作 → 断言」闭环。
 
 ## Requirements
 

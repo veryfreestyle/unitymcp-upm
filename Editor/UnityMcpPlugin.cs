@@ -103,6 +103,8 @@ namespace VeryFS.UnityMCP.Editor
                 registry.Register(testCommand);
                 registry.Register(new TestStatusCommand(
                     testTracker, new UnityEditorBusyState(), new UnityEditorFocusState(), new SystemClock()));
+                registry.Register(new TestListCommand(
+                    new UnityTestListProvider(), new UnityEditorBusyState(), new UnityPlayModeController()));
             }
             catch (Exception ex)
             {

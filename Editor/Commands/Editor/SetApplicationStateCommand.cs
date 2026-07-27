@@ -32,7 +32,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Editor
 
         public RpcToolDescriptor Descriptor => new RpcToolDescriptor
         {
-            Name = "editor-application-set-state",
+            Name = "editor-set-state",
             RpcMethod = RpcMethods.EditorApplicationSetState,
             Title = "Editor / Application / Set State",
             Description = "Start/stop/pause playmode. Refuses when the project has compilation errors. " +

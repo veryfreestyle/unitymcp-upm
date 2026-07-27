@@ -15,7 +15,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Editor
 
         public RpcToolDescriptor Descriptor => new RpcToolDescriptor
         {
-            Name = "editor-application-get-state",
+            Name = "editor-get-state",
             RpcMethod = RpcMethods.EditorApplicationGetState,
             Title = "Editor / Application / Get State",
             Description = "Return EditorApplication state: playmode, paused, compilation, and related flags.",

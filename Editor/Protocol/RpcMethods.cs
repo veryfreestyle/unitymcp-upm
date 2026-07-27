@@ -34,6 +34,7 @@ namespace VeryFS.UnityMCP.Editor.Protocol
         public const string AgentSkillInstall = "agent.skill.install";
         public const string TestRun = "test.run";
         public const string TestStatus = "test.status";
+        public const string TestList = "test.list";
         public const string GameViewGetState = "game-view.get-state";
         public const string GameViewListResolutions = "game-view.list-resolutions";
         public const string GameViewSetResolution = "game-view.set-resolution";

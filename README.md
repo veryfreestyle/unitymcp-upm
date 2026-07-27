@@ -41,29 +41,6 @@ UI 会按勾选项维护这些项目内文件：
 
 升级 UnityMCP 后，再次点击 `Install Agent Skill` 即可更新生成内容。如果 UI 提示存在用户维护的 `Custom` skill，确认后才会覆盖。
 
-## MCP 工具一览
-
-Server 通过 `tools/list` 暴露以下工具（含 `install-agent-skill` 自身；生成 skill 时默认排除该工具，避免 agent 递归安装）：
-
-| Tool | Access | Completion | Purpose |
-|---|---|---|---|
-| `assets-refresh` | mutating | report | Trigger AssetDatabase.Refresh() with empty params and wait for the terminal compilation report. |
-| `batch-execute` | mutating | response | Run a sequence of RPC sub-commands serially in one call and return their aggregated results. Each entry is {"tool": <rpcMethod>, "params": {...}}. Sub-commands run in order; results align by index. failFast (default false): stop after the first failing sub-command (a sub-command fails when it returns an error). Pseudo-command "wait" pauses between steps: {"tool":"wait","params":{"ms":500}} or {"tool":"wait","params":{"frames":3}} (ms and frames are mutually exclusive; no upper bound — bound the whole batch via timeoutMs). NOT supported as sub-commands: assets.refresh, editor.application.set-state, test.run (long-running), and batch.execute (no nesting). |
-| `console` | mutating | response | Read or clear the Unity console log buffer. action: get-logs \| clear-logs. |
-| `editor-application-get-state` | read-only | response | Return EditorApplication state: playmode, paused, compilation, and related flags. |
-| `editor-application-set-state` | mutating | report | Start/stop/pause playmode. Refuses when the project has compilation errors. Blocks until the play-mode transition completes (survives domain reload) and returns the post-transition state. |
-| `fgui-input` | mutating | response | Drive FairyGUI objects through the real input pipeline (async, cross-frame). action: click \| double-click \| hover \| gesture. Play mode only. |
-| `fgui-query` | mutating | response | Inspect the live FairyGUI hierarchy. action: get-tree \| list-panels. |
-| `fgui-state` | mutating | response | Read/write FairyGUI object state synchronously. action: set-text \| set-value \| set-controller \| set-selection \| scroll \| transition \| focus \| call-event. Play mode only. |
-| `game-view` | mutating | response | Inspect or change the current Game View. action: get-state \| list-resolutions \| set-resolution \| set-maximized. |
-| `gameobject` | mutating | response | Locate GameObjects and read their components in the open scene. action: find \| component-get. |
-| `health` | read-only | response | Return the Unity MCP server status and Unity editor connection state. Never errors; a disconnected editor is reported as data. |
-| `install-agent-skill` | mutating | response | Generate and install a UnityMCP agent skill for the current project. |
-| `scene` | mutating | response | Query or mutate the open Editor scene(s). action: get \| open \| save. |
-| `screenshot-game-view` | read-only | response | Capture the Editor Game View and return it as an image for visual inspection. Requires an open Game View. |
-| `test-run` | mutating | report | Run Unity Test Runner tests for the given assemblies and wait for the terminal result. Call assets-refresh first so tests run against the latest compiled assemblies. Refused when the project has compilation errors, when the editor is compiling or importing, when any loaded scene has unsaved changes, or when already in play mode. While a run is in progress every tool except test-status, console (get-logs / clear-logs) and screenshot-game-view returns editor_busy; the transport's own unity.heartbeat and requests.report stay open so the run can report back. timeoutMs is a wall-clock ceiling on the whole call: exceeding it answers with errorCode request_timeout. Unity cannot cancel a running test run, so the tests keep going and other tools stay refused with tests_running until the run actually stops; poll test-status. Returns a summary plus every failing test; pass includeDetails to also get passing tests. |
-| `test-status` | read-only | response | Read the current test run progress or the most recent finished run. Allowed while a test run is in progress. Use it after a test-run call times out to recover the result, or to see why a run appears stuck (blockedReason). |
-
 ## 在 CLAUDE.md / AGENTS.md 中提示 Agent
 
 如果项目已有 `CLAUDE.md` 或 `AGENTS.md`，可以加入下面这段简短提示：
@@ -75,6 +52,29 @@ When working on this Unity project, use the project-local `unitymcp` skill. Pref
 
 If the `unitymcp` skill is missing or stale, ask the user to open `Window/UnityMCP - VeryFS`, enable the desired Agent Clients, and click `Install Agent Skill`.
 ```
+
+## MCP 工具一览
+
+Server 通过 `tools/list` 暴露以下工具（含 `install-agent-skill` 自身；生成 skill 时默认排除该工具，避免 agent 递归安装）：
+
+| Tool | Access | Completion | 用途 |
+|---|---|---|---|
+| `assets-refresh` | mutating | report | 用空参数触发 `AssetDatabase.Refresh()`，等待编译完成并返回最终报告。 |
+| `batch-execute` | mutating | response | 在一次调用里串行执行一组 RPC 子命令，返回汇总结果。每项格式为 `{"tool": <rpcMethod>, "params": {...}}`；子命令按顺序执行，结果按下标对齐。`failFast`（默认 false）：遇到第一个失败的子命令（返回 error）就停止。伪命令 `wait` 用于步骤间暂停：`{"tool":"wait","params":{"ms":500}}` 或 `{"tool":"wait","params":{"frames":3}}`（`ms` 和 `frames` 互斥；无上限，用 `timeoutMs` 限制整批耗时）。不支持作为子命令的有：`assets.refresh`、`editor.application.set-state`、`test.run`（长耗时）、`batch.execute`（不可嵌套）。 |
+| `console` | mutating | response | 读取或清空 Unity 控制台日志缓冲区。action: get-logs \| clear-logs。 |
+| `editor-application-get-state` | read-only | response | 返回 EditorApplication 状态：playmode、paused、compilation 等相关标志位。 |
+| `editor-application-set-state` | mutating | report | 启动/停止/暂停 playmode。项目有编译错误时拒绝执行。调用会阻塞直到 play mode 切换完成（跨越 domain reload），并返回切换后的状态。 |
+| `fgui-input` | mutating | response | 通过真实输入管线驱动 FairyGUI 对象（异步，跨帧）。action: click \| double-click \| hover \| gesture。仅限 play mode。 |
+| `fgui-query` | mutating | response | 检查实时 FairyGUI 层级结构。action: get-tree \| list-panels。 |
+| `fgui-state` | mutating | response | 同步读写 FairyGUI 对象状态。action: set-text \| set-value \| set-controller \| set-selection \| scroll \| transition \| focus \| call-event。仅限 play mode。 |
+| `game-view` | mutating | response | 查看或修改当前 Game View。action: get-state \| list-resolutions \| set-resolution \| set-maximized。 |
+| `gameobject` | mutating | response | 在已打开的场景中定位 GameObject 并读取其组件。action: find \| component-get。 |
+| `health` | read-only | response | 返回 Unity MCP server 状态和 Unity editor 连接状态。永不报错；editor 未连接时也作为正常数据返回。 |
+| `install-agent-skill` | mutating | response | 为当前项目生成并安装 UnityMCP agent skill。 |
+| `scene` | mutating | response | 查询或修改已打开的 Editor 场景。action: get \| open \| save。 |
+| `screenshot-game-view` | read-only | response | 截取 Editor Game View 并以图片形式返回，供可视化检查。需要 Game View 已打开。 |
+| `test-run` | mutating | report | 对指定 assembly 运行 Unity Test Runner 测试，并等待最终结果。跑测前先调用 `assets-refresh`，确保测试针对最新编译的程序集。以下情况会被拒绝：项目有编译错误、editor 正在 compiling/importing、任一已加载场景有未保存改动、或已处于 play mode。跑测期间，除 `test-status`、`console`（get-logs / clear-logs）和 `screenshot-game-view` 外，其余工具都返回 `editor_busy`；传输层自身的 `unity.heartbeat` 和 `requests.report` 保持开放，以便结果能回传。`timeoutMs` 是整个调用的墙钟耗时上限：超时返回 `errorCode` `request_timeout`。Unity 无法取消正在运行的测试，跑测会继续进行，其他工具在此期间以 `tests_running` 拒绝，需轮询 `test-status`。返回结果摘要及所有失败用例；传 `includeDetails` 可一并返回通过的用例。 |
+| `test-status` | read-only | response | 读取当前跑测进度或最近一次已完成的跑测结果。跑测进行中也可调用。可在 `test-run` 调用超时后用它取回结果，或用来排查跑测为何卡住（`blockedReason`）。 |
 
 ---
 

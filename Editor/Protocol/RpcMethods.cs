@@ -39,6 +39,10 @@ namespace VeryFS.UnityMCP.Editor.Protocol
         public const string GameViewListResolutions = "game-view.list-resolutions";
         public const string GameViewSetResolution = "game-view.set-resolution";
         public const string GameViewSetMaximized = "game-view.set-maximized";
+        public const string AssetSearch = "asset.search";
+        public const string AssetGetInfo = "asset.get-info";
+        public const string AssetFind = "asset.find";
+        public const string AssetComponentGet = "asset.component-get";
 
         // P9 聚合组路由 key (一组一个 method)。
         public const string FairyGuiInputGroup = "fgui.input";
@@ -48,5 +52,6 @@ namespace VeryFS.UnityMCP.Editor.Protocol
         public const string SceneGroup = "editor.scene";
         public const string GameObjectGroup = "gameobject";
         public const string GameViewGroup = "game-view";
+        public const string AssetGroup = "asset";
     }
 }

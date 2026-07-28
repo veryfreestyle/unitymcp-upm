@@ -3,7 +3,7 @@ using LitJson;
 using UnityEngine;
 using VeryFS.UnityMCP.Editor.Protocol;
 
-namespace VeryFS.UnityMCP.Editor.Commands.Scene
+namespace VeryFS.UnityMCP.Editor.Commands.Serialization
 {
     // Serializes a GameObject subtree: instanceId/name/active/tag/layer, inlined
     // Transform, optional component type list, depth-limited children, UTF-8 budget.

@@ -6,6 +6,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityMCP.Editor.Infrastructure;
 using VeryFS.UnityMCP.Editor.Commands;
+using VeryFS.UnityMCP.Editor.Commands.Asset;
 using VeryFS.UnityMCP.Editor.Commands.AgentSkill;
 using VeryFS.UnityMCP.Editor.Commands.Console;
 using VeryFS.UnityMCP.Editor.Protocol;
@@ -191,6 +192,33 @@ namespace VeryFS.UnityMCP.Editor
             });
             registry.Register(new GameObjectFindCommand(new UnityEditorBusyState(), new UnityGameObjectLocator()));
             registry.Register(new GameObjectComponentGetCommand(new UnityEditorBusyState(), new UnityGameObjectLocator()));
+            // asset: 纯只读 AssetDatabase 查询。与 console / test runner 一致包 try:
+            // 装配失败只写 warning, 不能拖垮 [InitializeOnLoad]。
+            try
+            {
+                var assetGateway = new UnityAssetGateway();
+                registry.RegisterGroup(new RpcGroupDefinition
+                {
+                    Group = RpcMethods.AssetGroup, ToolName = "asset",
+                    Title = "Asset",
+                    Description = "Read-only AssetDatabase queries. action: search | get-info | find | component-get. " +
+                        "search finds assets by structured conditions (results sorted by path, capped, no paging); " +
+                        "get-info reads one asset by path or guid and returns type-specialised details; " +
+                        "find walks the hierarchy inside a prefab/model asset via childPath; " +
+                        "component-get reads that node's component fields. " +
+                        "A broken internal reference (details.shaderResolved: false) is a normal successful " +
+                        "result, not a call failure.",
+                    Annotations = JsonRpcSerializer.Object(("readOnlyHint", true), ("idempotentHint", true))
+                });
+                registry.Register(new AssetSearchCommand(new UnityEditorBusyState(), assetGateway));
+                registry.Register(new AssetGetInfoCommand(new UnityEditorBusyState(), assetGateway));
+                registry.Register(new AssetFindCommand(new UnityEditorBusyState(), assetGateway));
+                registry.Register(new AssetComponentGetCommand(new UnityEditorBusyState(), assetGateway));
+            }
+            catch (Exception ex)
+            {
+                UnityEngine.Debug.LogWarning("Unity MCP: asset wiring failed. " + ex.Message);
+            }
             registry.Register(new BatchExecuteCommand(
                 registry, new UniTaskFrameStepper(), new UniTaskDelayProvider()));
             AgentSkillRegistration.Register(

@@ -4,7 +4,7 @@ using LitJson;
 using UnityEngine;
 using VeryFS.UnityMCP.Editor.Protocol;
 
-namespace VeryFS.UnityMCP.Editor.Commands.Scene
+namespace VeryFS.UnityMCP.Editor.Commands.Serialization
 {
     // Serializes a Component's Inspector-visible fields ([SerializeField]/public),
     // no property getters (zero side effects). Object references stay shallow.

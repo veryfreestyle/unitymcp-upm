@@ -1,6 +1,7 @@
 using System.Text;
 using LitJson;
 using UnityEngine;
+using VeryFS.UnityMCP.Editor.Commands.Serialization;
 using VeryFS.UnityMCP.Editor.Protocol;
 
 namespace VeryFS.UnityMCP.Editor.Commands.Scene

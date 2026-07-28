@@ -2,7 +2,7 @@
 
 通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 暴露 Unity Editor 能力，让 AI 直接操作编辑器。完整工具链由 Unity Editor 插件和外部 Go server 两部分组成。
 
-17 个工具：编译反馈、Console 日志、场景与 GameObject 查询、Game View 控制与截图、Test Runner 跑测、FairyGUI 交互闭环、批量执行。UPM 分发，Claude / Codex / OpenCode 一键接入。Unity 2021.3+，Mac / Windows 双平台。
+18 个工具：编译反馈、Console 日志、场景与 GameObject 查询、Asset 只读查询、Game View 控制与截图、Test Runner 跑测、FairyGUI 交互闭环、批量执行。UPM 分发，Claude / Codex / OpenCode 一键接入。Unity 2021.3+，Mac / Windows 双平台。
 
 ## 设计理念
 
@@ -89,6 +89,7 @@ Server 通过 `tools/list` 暴露以下工具（含 `install-agent-skill` 自身
 
 | Tool | Access | Completion | 用途 |
 |---|---|---|---|
+| `asset` | read-only | response | 只读 AssetDatabase 查询。action: search \| get-info \| find \| component-get。search 按结构化条件（`nameContains` / `typeName` / `labels` / `folders` / `searchInPackages`）找资源，结果按 path 升序、上限默认 50 且不分页；get-info 按 path 或 guid（都传以 guid 为准）返回类型 / importer / 子资源，并按主对象类型给特化 `details`（Material 给 shader 解析状态、fallback 判定与贴图槽三态）；find 用 `childPath` 定位 prefab / 导入模型内部节点，可按深度展开层级；component-get 读该节点 Component 的完整字段。资源存在但内部引用断裂（`shaderResolved: false`）是正常成功结果，不是调用失败。 |
 | `assets-refresh` | mutating | report | 用空参数触发 `AssetDatabase.Refresh()`，等待编译完成并返回最终报告。 |
 | `batch-execute` | mutating | response | 在一次调用里串行执行一组 RPC 子命令，返回汇总结果。每项格式为 `{"tool": <rpcMethod>, "params": {...}}`；子命令按顺序执行，结果按下标对齐。`failFast`（默认 false）：遇到第一个失败的子命令（返回 error）就停止。伪命令 `wait` 用于步骤间暂停：`{"tool":"wait","params":{"ms":500}}` 或 `{"tool":"wait","params":{"frames":3}}`（`ms` 和 `frames` 互斥；无上限，用 `timeoutMs` 限制整批耗时）。不支持作为子命令的有：`assets.refresh`、`editor.application.set-state`、`test.run`（长耗时）、`batch.execute`（不可嵌套）。 |
 | `console` | mutating | response | 读取或清空 Unity 控制台日志缓冲区。action: get-logs \| clear-logs。 |

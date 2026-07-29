@@ -73,27 +73,19 @@ UI 会按勾选项维护这些项目内文件，Unity 每次启动都会重写�
 
 ## MCP 工具一览
 
-Server 通过 `tools/list` 暴露以下工具：
+Server 通过 `tools/list` 暴露 17 个工具；精确参数、schema 与错误语义以运行时 `tools/list` 为准。
 
-| Tool | Access | Completion | 用途 |
-|---|---|---|---|
-| `asset` | read-only | response | 只读 AssetDatabase 查询。action: search \| get-info \| find \| component-get。search 按结构化条件（`nameContains` / `typeName` / `labels` / `folders` / `searchInPackages`）找资源，结果按 path 升序、上限默认 50 且不分页；get-info 按 path 或 guid（都传以 guid 为准）返回类型 / importer / 子资源，并按主对象类型给特化 `details`（Material 给 shader 解析状态、fallback 判定与贴图槽三态）；find 用 `childPath` 定位 prefab / 导入模型内部节点，可按深度展开层级；component-get 读该节点 Component 的完整字段。资源存在但内部引用断裂（`shaderResolved: false`）是正常成功结果，不是调用失败。 |
-| `assets-refresh` | mutating | report | 用空参数触发 `AssetDatabase.Refresh()`，等待编译完成并返回最终报告。 |
-| `batch-execute` | mutating | response | 在一次调用里串行执行一组 RPC 子命令，返回汇总结果。每项格式为 `{"tool": <rpcMethod>, "params": {...}}`；子命令按顺序执行，结果按下标对齐。`failFast`（默认 false）：遇到第一个失败的子命令（返回 error）就停止。伪命令 `wait` 用于步骤间暂停：`{"tool":"wait","params":{"ms":500}}` 或 `{"tool":"wait","params":{"frames":3}}`（`ms` 和 `frames` 互斥；无上限，用 `timeoutMs` 限制整批耗时）。不支持作为子命令的有：`assets.refresh`、`editor.application.set-state`、`test.run`（长耗时）、`batch.execute`（不可嵌套）。 |
-| `console` | mutating | response | 读取或清空 Unity 控制台日志缓冲区。action: get-logs \| clear-logs。 |
-| `editor-get-state` | read-only | response | 返回 EditorApplication 状态：playmode、paused、compilation 等相关标志位。 |
-| `editor-set-state` | mutating | report | 启动/停止/暂停 playmode。项目有编译错误时拒绝执行。调用会阻塞直到 play mode 切换完成（跨越 domain reload），并返回切换后的状态。 |
-| `fgui-input` | mutating | response | 通过真实输入管线驱动 FairyGUI 对象（异步，跨帧）。action: click \| double-click \| hover \| gesture。仅限 play mode。 |
-| `fgui-query` | mutating | response | 检查实时 FairyGUI 层级结构。action: get-tree \| list-panels。 |
-| `fgui-state` | mutating | response | 同步读写 FairyGUI 对象状态。action: set-text \| set-value \| set-controller \| set-selection \| scroll \| transition \| focus \| call-event。仅限 play mode。 |
-| `game-view` | mutating | response | 查看或修改当前 Game View。action: get-state \| list-resolutions \| set-resolution \| set-maximized。 |
-| `gameobject` | mutating | response | 在已打开的场景中定位 GameObject 并读取其组件。action: find \| component-get。 |
-| `health` | read-only | response | 返回 Unity MCP server 状态和 Unity editor 连接状态。永不报错；editor 未连接时也作为正常数据返回。 |
-| `scene` | mutating | response | 查询或修改已打开的 Editor 场景。action: get \| open \| save。 |
-| `screenshot-game-view` | read-only | response | 截取 Editor Game View 并以图片形式返回，供可视化检查。需要 Game View 已打开。 |
-| `test-list` | read-only | response | 列出 Unity Test Runner 认得的全部测试程序集及其 testMode（EditMode / PlayMode），直接喂 `test-run` 的 `assemblyNames` 与 `testMode`。 |
-| `test-run` | mutating | report | 对指定 assembly 运行 Unity Test Runner 测试，并等待最终结果。跑测前先调用 `assets-refresh`，确保测试针对最新编译的程序集。以下情况会被拒绝：项目有编译错误、editor 正在 compiling/importing、任一已加载场景有未保存改动、或已处于 play mode。跑测期间，除 `test-status`、`console`（get-logs / clear-logs）和 `screenshot-game-view` 外，其余工具都返回 `editor_busy`；传输层自身的 `unity.heartbeat` 和 `requests.report` 保持开放，以便结果能回传。PlayMode 跑测默认走正常 domain reload，结果与 CI / 手工跑一致；传 `disableDomainReload: true` 可换速度，代价是静态状态不重置、结果可能与 CI 不一致。`timeoutMs` 是整个调用的墙钟耗时上限：超时返回 `errorCode` `request_timeout`。Unity 无法取消正在运行的测试，跑测会继续进行，其他工具在此期间以 `tests_running` 拒绝，需轮询 `test-status`。返回结果摘要及所有失败用例；传 `includeDetails` 可一并返回通过的用例。 |
-| `test-status` | read-only | response | 读取当前跑测进度或最近一次已完成的跑测结果。跑测进行中也可调用。可在 `test-run` 调用超时后用它取回结果，或用来排查跑测为何卡住（`blockedReason`）。 |
+| 分组 | 工具 | 用途 |
+|---|---|---|
+| 连接与 Editor | `health`、`editor-get-state`、`editor-set-state` | 查看 MCP / Editor 状态，切换 play mode。 |
+| 编译与日志 | `assets-refresh`、`console` | 触发 AssetDatabase refresh、读取或清空 Console。 |
+| 场景与资源 | `scene`、`gameobject`、`asset` | 打开/保存场景，查询场景对象、组件、AssetDatabase 与 prefab 内容。 |
+| Game View | `game-view`、`screenshot-game-view` | 查看/设置 Game View 分辨率、最大化状态并截图。 |
+| Test Runner | `test-list`、`test-run`、`test-status` | 发现测试程序集、运行 EditMode / PlayMode 测试、查询运行进度或最终结果。 |
+| FairyGUI | `fgui-query`、`fgui-state`、`fgui-input` | 查询 FairyGUI 层级，设置控件状态，走真实输入管线执行 click / gesture 等交互。 |
+| 编排 | `batch-execute` | 串行执行多条普通 RPC 子命令，减少多步 UI 自动化往返。 |
+
+常用测试流程：先 `assets-refresh`，再用 `test-list` 取程序集名，然后调用 `test-run`。`test-run` 超时只表示 MCP 调用等到上限，不代表测试失败；继续用 `test-status` 读取最终结果。
 
 ---
 

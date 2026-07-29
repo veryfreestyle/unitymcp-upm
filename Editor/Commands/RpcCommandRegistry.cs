@@ -64,11 +64,6 @@ namespace VeryFS.UnityMCP.Editor.Commands
             return byMethod.TryGetValue(method, out command);
         }
 
-        public IReadOnlyList<RpcToolDescriptor> Descriptors
-        {
-            get { EnsureBuilt(); return descriptors; }
-        }
-
         public JsonData BuildToolsArray()
         {
             EnsureBuilt();

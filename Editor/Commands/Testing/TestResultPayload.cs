@@ -24,7 +24,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
                     ("skipped", summary.Skipped),
                     ("durationSeconds", summary.DurationSeconds),
                     ("resultState", summary.ResultState ?? "Unknown"))),
-                ("domainReloadDisabled", outcome != null && outcome.DomainReloadDisabled));
+                ("domainReloadDisabled", outcome != null && outcome.DomainReloadDisabled),
+                ("resumedAcrossReload", outcome != null && outcome.ResumedAcrossReload));
 
             var results = outcome?.Results ?? new List<TestCaseResult>();
             payload["failures"] = BuildFailures(results, out bool capped);

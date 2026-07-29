@@ -10,6 +10,11 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         public string TestMode { get; set; } = "EditMode";
         public string[] AssemblyNames { get; set; }
         public string[] GroupNames { get; set; }
+
+        // true 时 PlayMode 跑测压 EnterPlayModeOptions.DisableDomainReload 换速度,
+        // 代价是静态字段与静态构造不重置, 结果可能与 CI 不一致 (P11 spec §8 风险 1)。
+        // 默认 false: 走正常 domain reload, 语义与 CI / 手工跑对齐。
+        public bool DisableDomainReload { get; set; }
     }
 
     public sealed class TestCaseResult
@@ -36,6 +41,10 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         public TestRunSummary Summary { get; set; }
         public List<TestCaseResult> Results { get; set; } = new List<TestCaseResult>();
         public bool DomainReloadDisabled { get; set; }
+
+        // 这次结果是不是跨过至少一次 domain reload 收回来的 (运行中途环境换过一次)。
+        // 与 DomainReloadDisabled 并列, 两者一起标注这次结果的适用范围。
+        public bool ResumedAcrossReload { get; set; }
     }
 
     public sealed class TestProgress
@@ -54,5 +63,9 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         void CountMatching(TestRunFilter filter, Action<int> onCounted);
 
         void Execute(TestRunFilter filter, Action<TestProgress> onProgress, Action<TestRunOutcome> onFinished);
+
+        // domain reload 之后重挂回调。框架里那次运行还在跑, 没了的只是持有回调的旧对象 ——
+        // 与 Execute 的唯一区别就是不再发起运行。
+        void Resume(TestRunFilter filter, Action<TestProgress> onProgress, Action<TestRunOutcome> onFinished);
     }
 }

@@ -23,6 +23,9 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         private string currentTestFullName;
         private int totalTests;
         private bool domainReloadDisabled;
+        // 本轮是不是 domain reload 之后认领回来的。与 domainReloadDisabled 并列汇报,
+        // 让调用方知道这次结果的运行中途换过一次环境。
+        private bool resumedAcrossReload;
         // EditMode 跑测不进 play mode, enterPlayModeOptions 对它的结果没有任何影响 ——
         // 记下本轮是不是 PlayMode, RunFinished 汇报 domainReloadDisabled 时按这个裁剪,
         // 避免同一会话里遗留的 PlayMode Restore 标记把下一次 EditMode 结果也带脏。
@@ -78,20 +81,10 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         {
             onProgress = progress;
             onFinished = finished;
-            leafResults.Clear();
-            currentTestFullName = null;
-            totalTests = 0;
+            ResetForRun(filter);
 
-            // 换一个新身份: 旧运行 (可能还在框架里跑) 的回调从此再也匹配不上。
-            currentRunId = ++runIdSeq;
-            observedRunId = 0;
-            expectedLeafNames.Clear();
-            leafNamesTrusted = false;
-            foreignLeafReported = false;
-
-            domainReloadDisabled = false;
-            isPlayModeRun = ParseMode(filter.TestMode) == TestMode.PlayMode;
-            if (isPlayModeRun)
+            // 默认走正常 domain reload (语义与 CI 对齐); 只有调用方明确要速度时才压 override。
+            if (isPlayModeRun && filter.DisableDomainReload)
             {
                 domainReloadDisabled = PlayModeOptionsGuard.Apply();
             }
@@ -105,6 +98,37 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
 
             api.Execute(new ExecutionSettings(unityFilter));
             EditorApplication.QueuePlayerLoopUpdate();
+        }
+
+        // domain reload 之后认领: 框架里那次运行还在跑, 这里只是重新挂上耳朵。
+        // 不调 api.Execute (会变成第二次运行), 也不调 PlayModeOptionsGuard.Apply
+        // (reload 都发生了, 谈不上禁用)。叶子清单留空, 由 reload 之后到达的 RunStarted 重建。
+        public void Resume(TestRunFilter filter, Action<TestProgress> progress, Action<TestRunOutcome> finished)
+        {
+            onProgress = progress;
+            onFinished = finished;
+            ResetForRun(filter);
+            resumedAcrossReload = true;
+
+            EditorApplication.QueuePlayerLoopUpdate();
+        }
+
+        // Execute 与 Resume 共用的身份重置: 换一个新 runId, 旧运行的回调从此再也匹配不上。
+        private void ResetForRun(TestRunFilter filter)
+        {
+            leafResults.Clear();
+            currentTestFullName = null;
+            totalTests = 0;
+
+            currentRunId = ++runIdSeq;
+            observedRunId = 0;
+            expectedLeafNames.Clear();
+            leafNamesTrusted = false;
+            foreignLeafReported = false;
+
+            domainReloadDisabled = false;
+            resumedAcrossReload = false;
+            isPlayModeRun = ParseMode(filter.TestMode) == TestMode.PlayMode;
         }
 
         public void RunStarted(ITestAdaptor testsToRun)
@@ -173,7 +197,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             {
                 Summary = summary,
                 Results = new List<TestCaseResult>(leafResults),
-                DomainReloadDisabled = domainReloadDisabled
+                DomainReloadDisabled = domainReloadDisabled,
+                ResumedAcrossReload = resumedAcrossReload
             };
 
             var callback = onFinished;
@@ -250,7 +275,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             {
                 Summary = summary,
                 Results = results,
-                DomainReloadDisabled = domainReloadDisabled
+                DomainReloadDisabled = domainReloadDisabled,
+                ResumedAcrossReload = resumedAcrossReload
             };
 
             var callback = onFinished;

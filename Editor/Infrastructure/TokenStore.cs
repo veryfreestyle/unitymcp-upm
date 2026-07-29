@@ -14,10 +14,25 @@ namespace VeryFS.UnityMCP.Editor.Infrastructure
     /// </summary>
     public static class TokenStore
     {
-        private const string UnityTokenKey = "VeryFS.UnityMCP.UnityToken";
+        internal const string DefaultUnityTokenKey = "VeryFS.UnityMCP.UnityToken";
         private const int TokenBytes = 32;
 
         internal static Func<string> ClientTokenFilePathOverride;
+
+        /// <summary>
+        /// Redirects the SessionState key holding the Unity token, so tests can mint
+        /// and Clear tokens without touching the live Editor's own.
+        ///
+        /// Without this seam, a test calling Clear() erases the running Editor's Unity
+        /// token while the server it spawned keeps the token it was given at launch.
+        /// The next domain reload then mints a different one, and every reconnect is
+        /// rejected 401 for the rest of the Editor session — the server's token is
+        /// fixed at spawn, so nothing short of restarting it recovers.
+        /// </summary>
+        internal static Func<string> UnityTokenKeyOverride;
+
+        private static string UnityTokenKey =>
+            UnityTokenKeyOverride?.Invoke() ?? DefaultUnityTokenKey;
 
         private static string ClientTokenFilePath =>
             ClientTokenFilePathOverride?.Invoke()

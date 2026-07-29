@@ -21,6 +21,12 @@ namespace VeryFS.UnityMCP.Editor.Transport
         private const int MaxReconnectDelayMs = 5000;
         private const int RequestTimeoutMs = 3000;
 
+        // A rejected token is not a transient failure, so it does not share the
+        // "log the first failure of a streak, then go quiet" policy below. It still
+        // gets throttled: reconnects settle at MaxReconnectDelayMs, and one Console
+        // error every five seconds for the rest of the session is its own problem.
+        private const int AuthenticationFailureLogThrottleMs = 30000;
+
         // Report loop polling. Idle polling is deliberately slow so we are not
         // hitting the disk on the main thread 100x/second when there is nothing
         // to report; once terminal reports exist we poll faster to retry the
@@ -46,6 +52,7 @@ namespace VeryFS.UnityMCP.Editor.Transport
         private Task supervisorTask;
         private Task reportTask;
         private bool started;
+        private DateTime lastAuthenticationFailureLogUtc = DateTime.MinValue;
         private bool disposed;
 
         // Called before each connection attempt; returning false stops the supervision loop.
@@ -147,6 +154,7 @@ namespace VeryFS.UnityMCP.Editor.Transport
                         Debug.Log("Unity MCP: connected to server.");
                     }
                     consecutiveFailures = 0;
+                    lastAuthenticationFailureLogUtc = DateTime.MinValue;
                     initialConnection.TrySetResult(null);
 
                     using (var connectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
@@ -174,11 +182,15 @@ namespace VeryFS.UnityMCP.Editor.Transport
                 }
                 catch (Exception exception)
                 {
-                    // Log only the first failure in a streak so a server that is
-                    // simply not running yet does not flood the Console with an
-                    // identical warning every reconnect attempt.
-                    if (consecutiveFailures == 0)
+                    if (IsAuthenticationFailure(exception))
                     {
+                        LogAuthenticationFailure(exception);
+                    }
+                    else if (consecutiveFailures == 0)
+                    {
+                        // Log only the first failure in a streak so a server that is
+                        // simply not running yet does not flood the Console with an
+                        // identical warning every reconnect attempt.
                         Debug.LogWarning("Unity MCP RPC connection closed: " + exception.Message +
                             " (retrying; further attempts will be silent until reconnected)");
                     }
@@ -218,6 +230,26 @@ namespace VeryFS.UnityMCP.Editor.Transport
             var exponent = Math.Min(consecutiveFailures - 1, 30);
             var scaled = (long)ReconnectDelayMs * (1L << exponent);
             return (int)Math.Min(scaled, MaxReconnectDelayMs);
+        }
+
+        private static bool IsAuthenticationFailure(Exception exception)
+        {
+            return (exception as WebSocketHandshakeException)?.IsAuthenticationFailure == true ||
+                (exception?.InnerException as WebSocketHandshakeException)?.IsAuthenticationFailure == true;
+        }
+
+        private void LogAuthenticationFailure(Exception exception)
+        {
+            var now = DateTime.UtcNow;
+            if (now - lastAuthenticationFailureLogUtc < TimeSpan.FromMilliseconds(AuthenticationFailureLogThrottleMs))
+            {
+                return;
+            }
+
+            lastAuthenticationFailureLogUtc = now;
+            Debug.LogError("Unity MCP: the server rejected this Editor's Unity token (" + exception.Message +
+                "). They disagree on the token and reconnecting will not fix it — restart Unity, " +
+                "or kill the server process so a new one is spawned with a matching token.");
         }
 
         private async Task HeartbeatLoopAsync(int intervalMs, CancellationToken cancellationToken)

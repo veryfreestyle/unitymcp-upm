@@ -8,7 +8,7 @@ namespace VeryFS.UnityMCP.Editor.Infrastructure
 {
     internal static class McpClientIntegrationPreferences
     {
-        private const string KeyPrefix = "VeryFS.UnityMCP.AgentClientTargets.";
+        private const string KeyPrefix = "VeryFS.UnityMCP.McpClientTargets.";
 
         public static McpClientTarget Load(string projectRoot)
         {

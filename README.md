@@ -2,7 +2,7 @@
 
 通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 暴露 Unity Editor 能力，让 AI 直接操作编辑器。完整工具链由 Unity Editor 插件和外部 Go server 两部分组成。
 
-18 个工具：编译反馈、Console 日志、场景与 GameObject 查询、Asset 只读查询、Game View 控制与截图、Test Runner 跑测、FairyGUI 交互闭环、批量执行。UPM 分发，Claude / Codex / OpenCode 一键接入。Unity 2021.3+，Mac / Windows 双平台。
+17 个工具：编译反馈、Console 日志、场景与 GameObject 查询、Asset 只读查询、Game View 控制与截图、Test Runner 跑测、FairyGUI 交互闭环、批量执行。UPM 分发，Claude / Codex / OpenCode 一键接入。Unity 2021.3+，Mac / Windows 双平台。
 
 ## 设计理念
 
@@ -54,38 +54,26 @@ Add the following to your project's `Packages/manifest.json`:
 }
 ```
 
-## 安装 Agent Skill
+## 配置 MCP 客户端
 
-打开 Unity 项目后，UnityMCP 会启动项目本地 MCP server。通过 Unity UI 可以同时完成 MCP 配置写入和 Agent Skill 安装。
+打开 Unity 项目后，UnityMCP 会启动项目本地 MCP server，并按勾选的客户端写入 MCP 配置。
 
 1. 打开 `Window/UnityMCP - VeryFS`，确认 MCP Server 状态为 `Connected`。
-2. 在 `Agent Clients` 区域勾选需要配置的客户端。默认启用 `Claude` 和 `Codex`，`OpenCode` 默认关闭，需要时手动开启。
-3. 点击 `Install Agent Skill`，为已启用客户端安装或更新 `unitymcp` skill。
+2. 在 `MCP Clients` 区域勾选需要配置的客户端。默认启用 `Claude` 和 `Codex`，`OpenCode` 默认关闭，需要时手动开启。
 
 ![UnityMCP window](monitor.jpg)
 
-UI 会按勾选项维护这些项目内文件：
+UI 会按勾选项维护这些项目内文件，Unity 每次启动都会重写它们：
 
-- MCP 配置：`.mcp.json`、`.codex/config.toml`、`.opencode/opencode.json`
-- Agent Skill：`.agents/skills/unitymcp/SKILL.md`、`.opencode/skills/unitymcp/SKILL.md`
+- `.mcp.json`（Claude）
+- `.codex/config.toml`（Codex）
+- `.opencode/opencode.json`（OpenCode）
 
-升级 UnityMCP 后，再次点击 `Install Agent Skill` 即可更新生成内容。如果 UI 提示存在用户维护的 `Custom` skill，确认后才会覆盖。
-
-## 在 CLAUDE.md / AGENTS.md 中提示 Agent
-
-如果项目已有 `CLAUDE.md` 或 `AGENTS.md`，可以加入下面这段简短提示：
-
-```markdown
-## UnityMCP
-
-When working on this Unity project, use the project-local `unitymcp` skill. Prefer UnityMCP MCP tools for Editor status, compilation, tests, logs, scene/Game View inspection, and Editor automation.
-
-If the `unitymcp` skill is missing or stale, ask the user to open `Window/UnityMCP - VeryFS`, enable the desired Agent Clients, and click `Install Agent Skill`.
-```
+取消勾选会移除对应文件里的 UnityMCP entry，不动其它配置。这些文件含 client token，应保持 git-ignored。
 
 ## MCP 工具一览
 
-Server 通过 `tools/list` 暴露以下工具（含 `install-agent-skill` 自身；生成 skill 时默认排除该工具，避免 agent 递归安装）：
+Server 通过 `tools/list` 暴露以下工具：
 
 | Tool | Access | Completion | 用途 |
 |---|---|---|---|
@@ -101,11 +89,10 @@ Server 通过 `tools/list` 暴露以下工具（含 `install-agent-skill` 自身
 | `game-view` | mutating | response | 查看或修改当前 Game View。action: get-state \| list-resolutions \| set-resolution \| set-maximized。 |
 | `gameobject` | mutating | response | 在已打开的场景中定位 GameObject 并读取其组件。action: find \| component-get。 |
 | `health` | read-only | response | 返回 Unity MCP server 状态和 Unity editor 连接状态。永不报错；editor 未连接时也作为正常数据返回。 |
-| `install-agent-skill` | mutating | response | 为当前项目生成并安装 UnityMCP agent skill。 |
 | `scene` | mutating | response | 查询或修改已打开的 Editor 场景。action: get \| open \| save。 |
 | `screenshot-game-view` | read-only | response | 截取 Editor Game View 并以图片形式返回，供可视化检查。需要 Game View 已打开。 |
 | `test-list` | read-only | response | 列出 Unity Test Runner 认得的全部测试程序集及其 testMode（EditMode / PlayMode），直接喂 `test-run` 的 `assemblyNames` 与 `testMode`。 |
-| `test-run` | mutating | report | 对指定 assembly 运行 Unity Test Runner 测试，并等待最终结果。跑测前先调用 `assets-refresh`，确保测试针对最新编译的程序集。以下情况会被拒绝：项目有编译错误、editor 正在 compiling/importing、任一已加载场景有未保存改动、或已处于 play mode。跑测期间，除 `test-status`、`console`（get-logs / clear-logs）和 `screenshot-game-view` 外，其余工具都返回 `editor_busy`；传输层自身的 `unity.heartbeat` 和 `requests.report` 保持开放，以便结果能回传。`timeoutMs` 是整个调用的墙钟耗时上限：超时返回 `errorCode` `request_timeout`。Unity 无法取消正在运行的测试，跑测会继续进行，其他工具在此期间以 `tests_running` 拒绝，需轮询 `test-status`。返回结果摘要及所有失败用例；传 `includeDetails` 可一并返回通过的用例。 |
+| `test-run` | mutating | report | 对指定 assembly 运行 Unity Test Runner 测试，并等待最终结果。跑测前先调用 `assets-refresh`，确保测试针对最新编译的程序集。以下情况会被拒绝：项目有编译错误、editor 正在 compiling/importing、任一已加载场景有未保存改动、或已处于 play mode。跑测期间，除 `test-status`、`console`（get-logs / clear-logs）和 `screenshot-game-view` 外，其余工具都返回 `editor_busy`；传输层自身的 `unity.heartbeat` 和 `requests.report` 保持开放，以便结果能回传。PlayMode 跑测默认走正常 domain reload，结果与 CI / 手工跑一致；传 `disableDomainReload: true` 可换速度，代价是静态状态不重置、结果可能与 CI 不一致。`timeoutMs` 是整个调用的墙钟耗时上限：超时返回 `errorCode` `request_timeout`。Unity 无法取消正在运行的测试，跑测会继续进行，其他工具在此期间以 `tests_running` 拒绝，需轮询 `test-status`。返回结果摘要及所有失败用例；传 `includeDetails` 可一并返回通过的用例。 |
 | `test-status` | read-only | response | 读取当前跑测进度或最近一次已完成的跑测结果。跑测进行中也可调用。可在 `test-run` 调用超时后用它取回结果，或用来排查跑测为何卡住（`blockedReason`）。 |
 
 ---

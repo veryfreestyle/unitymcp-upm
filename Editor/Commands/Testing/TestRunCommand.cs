@@ -17,6 +17,9 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
     {
         public const int InitTimeoutMs = 30000;
         public const int StuckThresholdMs = 60000;
+        // 认领之后允许的静默上限。与 StuckThresholdMs 同值但语义不同: 那条判"运行是不是停了",
+        // 这条判"认领是不是扑了个空"。同值只是巧合, 分开两个常量免得日后调一个动了两处。
+        public const int ResumeSilenceMs = 60000;
         public const int DefaultTimeoutMs = 300000;
         // schema 边界。Go 侧 mcpbridge 用同一个区间, 但它是"越界即拒" (invalid_params),
         // 不是夹紧 —— 所以经 Go 转发过来的值一定在区间内, 而直连 Unity 的调用方 (或旧版本
@@ -47,6 +50,10 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         // TestRunnerApi 没有 Cancel API, 框架的运行还在跑, 闸门要等它真的停了才能放
         // (见 Abandon / ReleaseIfRunStopped)。
         private bool inFlightAbandoned;
+
+        // 认领时刻。认领之后到第一条回调到达之间的静默计时靠它 (见 Tick), 与 inFlightRequestId
+        // 同寿命。为空表示"本轮不是认领来的, 或者认领已经被回调确认过了"。
+        private DateTimeOffset? resumedAt;
 
         public TestRunCommand(
             ITestRunner runner,
@@ -86,6 +93,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
                 "timeoutMs is a wall-clock ceiling on the whole call: exceeding it answers with errorCode " +
                 "request_timeout. Unity cannot cancel a running test run, so the tests keep going and other " +
                 "tools stay refused with tests_running until the run actually stops; poll test-status. " +
+                "PlayMode runs go through a normal domain reload by default, so results match CI and a " +
+                "manual run; pass disableDomainReload to trade that for speed. " +
                 "Returns a summary plus every failing test; pass includeDetails to also get passing tests.",
             Completion = "report",
             FailureMode = "error",
@@ -193,6 +202,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             var target = JsonRpcSerializer.Object(
                 ("testMode", testMode),
                 ("includeDetails", ReadBool(request.Params, "includeDetails")),
+                // 跟着记录一起持久化: domain reload 之后 ResumeAfterReload 要靠它重建 filter。
+                ("disableDomainReload", ReadBool(request.Params, "disableDomainReload")),
                 // timeoutMs 跟着 pending 记录一起持久化 —— Tick 靠它给这次调用加墙钟天花板,
                 // 没有天花板时"终态回调永不投递"(比如用户手工退出 play mode) 会让这条记录
                 // 永远卡在 processing, 调用方等到自己超时也拿不到任何答复。
@@ -241,12 +252,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             activator.ActivateIfNeeded();
 
             var target = JsonMapper.ToObject(entry.TargetState);
-            var filter = new TestRunFilter
-            {
-                TestMode = (string)target["testMode"],
-                AssemblyNames = ReadArray(target, "assemblyNames"),
-                GroupNames = ReadArray(target, "groupNames")
-            };
+            var filter = FilterOf(target);
             bool includeDetails = target.ContainsKey("includeDetails") && (bool)target["includeDetails"];
 
             entry.ExecutionState = "counting";
@@ -300,6 +306,24 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
                 return;
             }
 
+            // 认领的存活判据。必须排在 RunObserved 早退之前 —— reload 之后 tracker 里还留着
+            // reload 前的进度快照, RunObserved 是 true, 排在后面这条判据永远执行不到。
+            if (resumedAt.HasValue)
+            {
+                var lastProgressAt = tracker.LastProgressAt;
+                if (lastProgressAt.HasValue && lastProgressAt.Value > resumedAt.Value)
+                {
+                    // 回调来了, 认领坐实, 之后按普通运行处理。
+                    resumedAt = null;
+                }
+                else if ((clock.UtcNow - resumedAt.Value).TotalMilliseconds > ResumeSilenceMs)
+                {
+                    // 认领扑空: 框架里没有运行在跑, 再等下去只是干耗到墙钟天花板。
+                    Fail(inFlightRequestId, "test_run_interrupted");
+                    return;
+                }
+            }
+
             if (tracker.RunObserved)
             {
                 return;
@@ -343,6 +367,85 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             Fail(entry.OriginRequestId, "test_run_interrupted");
         }
 
+        // domain reload 之后由 composition root 同步调一次, 认领 reload 前还在跑的那次运行。
+        // 时机不能等 transport 重连: 实测 reload 到框架投递 RunStarted 只有约 500 ms,
+        // 重连晚一步回调就被身份判据丢弃了。
+        public void ResumeAfterReload()
+        {
+            // 先分两趟, 别在一趟里逐条 Fail: Fail 的 finally 会顺带清掉会话级共享的
+            // tracker.IsRunning, 而认领判据每条 entry 都要读它 —— 同一轮里前一条的 Fail 会污染
+            // 后一条的判定 (store.LoadAll 按文件名哈希排序, accepted 排在 running 前面时, 前者
+            // 清了标志, 后面本应续跑的 running entry 就被误判成中断)。
+            // running entry 正常只会有一条 (在飞的那次运行); 多出来的按并发残留一并终结。
+            PendingRefreshRequest running = null;
+            var others = new List<PendingRefreshRequest>();
+            foreach (var entry in store.LoadAll())
+            {
+                if (entry == null || entry.Method != Method || entry.State != "processing")
+                {
+                    continue;
+                }
+
+                if (running == null && entry.ExecutionState == "running")
+                {
+                    running = entry;
+                }
+                else
+                {
+                    others.Add(entry);
+                }
+            }
+
+            // 其余记录用不碰 tracker 的 MarkEntryFailed 终结: 运行标志 (若立着) 属于那条 running
+            // entry, 不属于它们 —— counting 阶段被打断时框架里根本没有运行可认领。
+            foreach (var other in others)
+            {
+                MarkEntryFailed(other.OriginRequestId, "test_run_interrupted");
+            }
+
+            bool adopted = false;
+            if (running != null)
+            {
+                if (tracker.IsRunning)
+                {
+                    Adopt(running);
+                    adopted = true;
+                }
+                else
+                {
+                    // 运行标志已清 = 上一轮已经收尾过, 认领只会让请求干等到墙钟天花板 —— 直接终结。
+                    MarkEntryFailed(running.OriginRequestId, "test_run_interrupted");
+                }
+            }
+
+            // 兜底: 没有任何在飞运行被认领, 而运行标志仍立着 (counting 阶段被打断留下的孤儿标志,
+            // 或 running entry 因上一轮已收尾而被上面终结)。这条必须清掉放闸 —— 原来靠逐条 Fail
+            // 顺带清 tracker 覆盖它: domain reload 后 inFlightRequestId 已是 null, Tick 头一个
+            // guard 直接返回, RecoverPending 也不再管已终态的 entry, 一旦这里漏清, transport gate
+            // 会挡住本次 Editor 会话剩余时间里所有非白名单命令, 调用方自己解不开。
+            if (!adopted && tracker.IsRunning)
+            {
+                Release("test_run_interrupted");
+            }
+        }
+
+        private void Adopt(PendingRefreshRequest entry)
+        {
+            var target = JsonMapper.ToObject(entry.TargetState);
+            bool includeDetails = target.ContainsKey("includeDetails") && (bool)target["includeDetails"];
+
+            inFlightRequestId = entry.OriginRequestId;
+            // 死线按 entry.StartedAt + timeoutMs 重算, 与首次派发同一口径 ——
+            // reload 耗掉的时间照算在调用方给的上限里。
+            inFlightDeadline = DeadlineOf(entry, target);
+            inFlightAbandoned = false;
+            resumedAt = clock.UtcNow;
+
+            // 不碰 tracker: StartedAt / 进度快照 / 运行标志都在 SessionState 上跨 reload 存活,
+            // 重新 MarkStarted 会把 init 超时窗口整个往后拉。
+            Attach(entry.OriginRequestId, FilterOf(target), includeDetails, resume: true);
+        }
+
         public JsonData BuildReportParams(PendingRefreshRequest entry)
         {
             var report = JsonRpcSerializer.Object(
@@ -377,18 +480,31 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             // 不再重新 MarkStarted —— init 超时窗口从 ExecuteAccepted 就已经开始计, 计数和执行算
             // 同一个 30s 窗口; TestMode 已记过, progress 此时也还是空, 重发一次只会把窗口拉长到 60s。
 
-            runner.Execute(
-                filter,
-                progress =>
+            Attach(requestId, filter, includeDetails, resume: false);
+        }
+
+        // 把这次请求的两个回调挂到 runner 上。Execute 与 Resume 只差"要不要发起运行",
+        // 回调本身完全一样 —— 分开写两份日后必然漂移。
+        private void Attach(string requestId, TestRunFilter filter, bool includeDetails, bool resume)
+        {
+            Action<TestProgress> onProgress = progress =>
+            {
+                // 被 test_init_timeout 判死的旧请求, Unity 的真 test runner 仍握着它的回调 ——
+                // 迟到的进度不属于当前在飞请求, 转发了会污染 tracker (含误压新请求的 RunObserved)。
+                if (requestId == inFlightRequestId)
                 {
-                    // 被 test_init_timeout 判死的旧请求, Unity 的真 test runner 仍握着它的回调 ——
-                    // 迟到的进度不属于当前在飞请求, 转发了会污染 tracker (含误压新请求的 RunObserved)。
-                    if (requestId == inFlightRequestId)
-                    {
-                        tracker.UpdateProgress(progress);
-                    }
-                },
-                outcome => Complete(requestId, outcome, includeDetails));
+                    tracker.UpdateProgress(progress);
+                }
+            };
+            Action<TestRunOutcome> onFinished = outcome => Complete(requestId, outcome, includeDetails);
+
+            if (resume)
+            {
+                runner.Resume(filter, onProgress, onFinished);
+                return;
+            }
+
+            runner.Execute(filter, onProgress, onFinished);
         }
 
         private void Complete(string requestId, TestRunOutcome outcome, bool includeDetails)
@@ -444,6 +560,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
                 inFlightRequestId = null;
                 inFlightDeadline = null;
                 inFlightAbandoned = false;
+                resumedAt = null;
                 tracker.MarkFinished(payload);
             }
         }
@@ -476,6 +593,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
                 inFlightRequestId = null;
                 inFlightDeadline = null;
                 inFlightAbandoned = false;
+                resumedAt = null;
             }
         }
 
@@ -525,6 +643,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             inFlightRequestId = null;
             inFlightDeadline = null;
             inFlightAbandoned = false;
+            resumedAt = null;
             if (tracker.IsRunning)
             {
                 tracker.MarkFinished(JsonRpcSerializer.Object(("errorCode", errorCode)));
@@ -566,6 +685,22 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             return null;
         }
 
+        // pending 记录里的 target 还原成 filter。ExecuteAccepted 与 ResumeAfterReload 共用 ——
+        // 两处各写一份, 日后加参数必漏一处。
+        private static TestRunFilter FilterOf(JsonData target)
+        {
+            return new TestRunFilter
+            {
+                TestMode = (string)target["testMode"],
+                AssemblyNames = ReadArray(target, "assemblyNames"),
+                GroupNames = ReadArray(target, "groupNames"),
+                DisableDomainReload = target.ContainsKey("disableDomainReload") &&
+                                      target["disableDomainReload"] != null &&
+                                      target["disableDomainReload"].IsBoolean &&
+                                      (bool)target["disableDomainReload"]
+            };
+        }
+
         private static string[] ReadArray(JsonData target, string key)
         {
             if (target == null || !target.ContainsKey(key) || target[key] == null || !target[key].IsArray)
@@ -601,8 +736,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
                     ("testMode", JsonRpcSerializer.Object(
                         ("type", "string"),
                         ("description",
-                            "EditMode (default) or PlayMode. PlayMode temporarily changes EditorSettings " +
-                            "to disable domain reload and enters play mode, so pass it only when needed."))),
+                            "EditMode (default) or PlayMode. PlayMode enters play mode and goes through a " +
+                            "normal domain reload, so it is slower than EditMode."))),
                     ("assemblyNames", JsonRpcSerializer.Object(
                         ("type", "array"),
                         ("minItems", 1),
@@ -621,6 +756,12 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
                         ("type", "boolean"),
                         ("description",
                             "Default false. When true also returns passing tests, which can be very large."))),
+                    ("disableDomainReload", JsonRpcSerializer.Object(
+                        ("type", "boolean"),
+                        ("description",
+                            "Default false. PlayMode only. When true the run temporarily disables domain " +
+                            "reload for speed, which leaves static state from previous runs in place and " +
+                            "can make results disagree with CI."))),
                     ("timeoutMs", JsonRpcSerializer.Object(
                         ("type", "integer"),
                         ("minimum", MinTimeoutMs),

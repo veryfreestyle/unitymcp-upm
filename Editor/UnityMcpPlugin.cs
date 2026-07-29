@@ -1,13 +1,10 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
-using LitJson;
 using UnityEditor;
 using UnityEngine;
 using UnityMCP.Editor.Infrastructure;
 using VeryFS.UnityMCP.Editor.Commands;
 using VeryFS.UnityMCP.Editor.Commands.Asset;
-using VeryFS.UnityMCP.Editor.Commands.AgentSkill;
 using VeryFS.UnityMCP.Editor.Commands.Console;
 using VeryFS.UnityMCP.Editor.Protocol;
 using VeryFS.UnityMCP.Editor.Commands.Editor;
@@ -101,6 +98,10 @@ namespace VeryFS.UnityMCP.Editor
                 testRunTracker = testTracker;
                 testRunCommand = testCommand;
                 EditorApplication.update += OnEditorUpdate;
+                // domain reload 之后认领 reload 前还在跑的那次运行。必须在这里同步做:
+                // 框架投递 RunStarted 距离本方法只有约 500 ms, 等 transport 重连再认领就晚了,
+                // 回调会被 UnityTestRunner 的身份判据丢弃。没有在飞运行时它是 no-op。
+                testCommand.ResumeAfterReload();
                 registry.Register(testCommand);
                 registry.Register(new TestStatusCommand(
                     testTracker, new UnityEditorBusyState(), new UnityEditorFocusState(), new SystemClock()));
@@ -221,10 +222,6 @@ namespace VeryFS.UnityMCP.Editor
             }
             registry.Register(new BatchExecuteCommand(
                 registry, new UniTaskFrameStepper(), new UniTaskDelayProvider()));
-            AgentSkillRegistration.Register(
-                registry,
-                projectRoot,
-                Application.unityVersion);
             int port = ProjectPortCalculator.GetPort(projectRoot);
             ServerTokens tokens = TokenStore.GetOrCreate();
             int editorPid = System.Diagnostics.Process.GetCurrentProcess().Id;
@@ -240,7 +237,10 @@ namespace VeryFS.UnityMCP.Editor
             {
                 VeryFS.UnityMCP.Editor.Infrastructure.ServerPidHolder.Set(launch.ServerPid);
             }
-            if (!launch.ShouldConnect)
+            // A retryable failure (our spawn has not answered yet) must still wire the
+            // connection loop up — it is the thing that retries. Only a permanent
+            // refusal takes this Editor out of the picture.
+            if (!launch.ShouldConnect && !launch.Retryable)
             {
                 UnityEngine.Debug.LogWarning(
                     "Unity MCP: not connecting this Editor. " + launch.Reason);
@@ -271,16 +271,31 @@ namespace VeryFS.UnityMCP.Editor
                     {
                         VeryFS.UnityMCP.Editor.Infrastructure.ServerPidHolder.Set(result.ServerPid);
                     }
-                    if (!result.ShouldConnect)
+                    if (!result.ShouldConnect && !result.Retryable)
                     {
                         UnityEngine.Debug.LogWarning("Unity MCP: server re-launch refused, stopping reconnect. " + result.Reason);
+                        return false;
                     }
-                    return result.ShouldConnect;
+                    // Retryable: EnsureServer already warned. Keep the loop running so
+                    // a server that is slow to come up does not disable MCP for the
+                    // rest of this Editor session.
+                    return true;
                 },
                 testsRunning: () => testRunInProgress);
             _ = productionLoop.StartAsync();
 
             EditorApplication.quitting += OnEditorQuitting;
+            // Domain reload: without this hook the old AppDomain is torn down while our
+            // WebSocket is still open, and closing the socket is deferred to the CLR's
+            // nondeterministic finalizer. The server keeps a half-open ESTABLISHED socket
+            // until its ~30 s pong watchdog expires — during which health reports
+            // unityConnected:false and reconnecting sockets pile up on the server side.
+            // Running the same synchronous Dispose() we run on quit closes the socket
+            // (TCP FIN) before the domain dies, so the server reaps the session promptly.
+            // (Measured: Dispose() FIN and Abort() RST are equally fast (~47 ms vs ~50 ms)
+            // for the server to observe the disconnect; the fix is simply that SOME
+            // synchronous teardown runs on reload, which previously it did not.)
+            AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
         }
 
         // Main thread. Refreshes the test-run flag before Tick so an exception thrown out
@@ -300,27 +315,13 @@ namespace VeryFS.UnityMCP.Editor
             productionLoop?.Dispose();
         }
 
-        internal static string InstallAgentSkillForMonitor(IReadOnlyList<string> clients, bool overwrite)
+        private static void OnBeforeAssemblyReload()
         {
-            if (!registry.TryGet(RpcMethods.AgentSkillInstall, out var command))
-            {
-                throw new InvalidOperationException("install-agent-skill is not registered.");
-            }
-
-            var response = command.Handle(JsonRpcRequest.Create(
-                "server-monitor-install-agent-skill",
-                RpcMethods.AgentSkillInstall,
-                JsonRpcSerializer.Object(
-                    ("name", "unitymcp"),
-                    ("clients", StringArray(clients)),
-                    ("overwrite", overwrite))));
-
-            if (response.Error != null)
-            {
-                throw new InvalidOperationException(response.Error.Message);
-            }
-
-            return "Installed UnityMCP agent skill.";
+            // Domain reload: synchronously tear down the connection (closes the socket
+            // before the AppDomain dies) so the server reaps the session immediately
+            // instead of waiting for its ~30 s pong watchdog. See the subscription
+            // comment above for the full explanation and measurement.
+            productionLoop?.Dispose();
         }
 
         internal static RpcConnectionLoop StartForTests(string url)
@@ -337,17 +338,6 @@ namespace VeryFS.UnityMCP.Editor
                 null);
             _ = loop.StartAsync();
             return loop;
-        }
-
-        private static JsonData StringArray(IReadOnlyList<string> values)
-        {
-            var result = new JsonData();
-            result.SetJsonType(JsonType.Array);
-            foreach (string value in values)
-            {
-                result.Add(value);
-            }
-            return result;
         }
     }
 }

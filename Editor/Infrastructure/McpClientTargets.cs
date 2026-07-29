@@ -20,15 +20,6 @@ namespace VeryFS.UnityMCP.Editor.Infrastructure
         public const string OpenCode = "opencode";
 
         public const McpClientTarget DefaultTargets = McpClientTarget.Claude | McpClientTarget.Codex;
-        public static readonly string[] AllClientNames = { Claude, Codex, OpenCode };
-        public static readonly string[] DefaultClientNames = { Claude, Codex };
-
-        public static bool IsKnownName(string name)
-        {
-            return string.Equals(name, Claude, StringComparison.Ordinal) ||
-                   string.Equals(name, Codex, StringComparison.Ordinal) ||
-                   string.Equals(name, OpenCode, StringComparison.Ordinal);
-        }
 
         public static McpClientTarget FromNames(IReadOnlyList<string> names)
         {
@@ -73,12 +64,6 @@ namespace VeryFS.UnityMCP.Editor.Infrastructure
                 result.Add(OpenCode);
             }
             return result;
-        }
-
-        public static bool HasAgentsSkillTarget(IReadOnlyList<string> clients)
-        {
-            McpClientTarget targets = FromNames(clients);
-            return (targets & (McpClientTarget.Claude | McpClientTarget.Codex)) != 0;
         }
     }
 }

@@ -12,11 +12,12 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
     /// </summary>
     public readonly struct ServerLaunchResult
     {
-        public ServerLaunchResult(bool shouldConnect, string reason, int serverPid)
+        public ServerLaunchResult(bool shouldConnect, string reason, int serverPid, bool retryable = false)
         {
             ShouldConnect = shouldConnect;
             Reason = reason;
             ServerPid = serverPid;
+            Retryable = retryable;
         }
 
         public bool ShouldConnect { get; }
@@ -24,6 +25,14 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
 
         /// <summary>Server process pid we should own/monitor (0 when refusing).</summary>
         public int ServerPid { get; }
+
+        /// <summary>
+        /// True when we could not connect this time but a later attempt may work, so
+        /// the caller should keep its reconnect loop alive. False on a permanent
+        /// refusal (a foreign editor owns the port, no binary), which the caller is
+        /// meant to stop retrying.
+        /// </summary>
+        public bool Retryable { get; }
 
         public static ServerLaunchResult Connect(int serverPid)
         {
@@ -33,6 +42,11 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
         public static ServerLaunchResult Refuse(string reason)
         {
             return new ServerLaunchResult(false, reason, 0);
+        }
+
+        public static ServerLaunchResult RetryLater(string reason)
+        {
+            return new ServerLaunchResult(false, reason, 0, retryable: true);
         }
     }
 
@@ -45,18 +59,31 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
     /// </summary>
     public sealed class ServerLauncher
     {
+        // How long to wait for a server we just spawned to answer /health, and how
+        // often to ask. A local Go binary binds in well under 100 ms, so the happy
+        // path costs one poll; the full budget is only ever spent on a spawn that is
+        // never going to come up.
+        private const int DefaultSpawnGraceMs = 3000;
+        private const int SpawnPollMs = 100;
+
         private readonly IHealthProber prober;
         private readonly IServerProcessSpawner spawner;
         private readonly Func<string> binaryResolver;
+        private readonly int spawnGraceMs;
+        private readonly Action<int> sleep;
 
         public ServerLauncher(
             IHealthProber prober,
             IServerProcessSpawner spawner,
-            Func<string> binaryResolver)
+            Func<string> binaryResolver,
+            int spawnGraceMs = DefaultSpawnGraceMs,
+            Action<int> sleep = null)
         {
             this.prober = prober ?? throw new ArgumentNullException(nameof(prober));
             this.spawner = spawner ?? throw new ArgumentNullException(nameof(spawner));
             this.binaryResolver = binaryResolver ?? throw new ArgumentNullException(nameof(binaryResolver));
+            this.spawnGraceMs = spawnGraceMs;
+            this.sleep = sleep ?? System.Threading.Thread.Sleep;
         }
 
         public ServerLaunchResult EnsureServer(
@@ -69,22 +96,7 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
             var health = prober.Probe(port, tokens.ClientToken);
             if (health.Alive)
             {
-                if (health.EditorSessionId == editorSessionId || string.IsNullOrEmpty(health.EditorSessionId))
-                {
-                    // Two cases that both mean "this server is ours to use":
-                    //   1. Same session ID: survived a Domain Reload, just reconnect.
-                    //   2. Empty session ID: server is up but has no active Unity
-                    //      connection (e.g. previous Editor exited cleanly or a
-                    //      play-mode domain reload disconnected C# before [InitializeOnLoad]
-                    //      ran again). Safe to take over.
-                    WriteDiscovery(projectRoot, editorSessionId, editorPid, port, health.ServerPid, tokens);
-                    return ServerLaunchResult.Connect(health.ServerPid);
-                }
-
-                var reason = "Unity MCP: port " + port + " is owned by another Editor session (" +
-                    health.EditorSessionId + "); not taking over.";
-                Debug.LogWarning(reason);
-                return ServerLaunchResult.Refuse(reason);
+                return UseLiveServer(health, projectRoot, editorSessionId, editorPid, port, tokens);
             }
 
             var binary = binaryResolver();
@@ -96,10 +108,77 @@ namespace VeryFS.UnityMCP.Editor.Lifecycle
                 return ServerLaunchResult.Refuse(reason);
             }
 
-            var serverPid = spawner.Spawn(binary, projectRoot, editorPid, port, tokens);
-            Debug.Log("Unity MCP: server spawned (pid " + serverPid + ") on port " + port + ".");
-            WriteDiscovery(projectRoot, editorSessionId, editorPid, port, serverPid, tokens);
-            return ServerLaunchResult.Connect(serverPid);
+            var spawnedPid = spawner.Spawn(binary, projectRoot, editorPid, port, tokens);
+
+            // A spawn is not a server. Returning the moment Process.Start hands back a
+            // pid is what makes duplicate spawns: the caller's connect fails against a
+            // server that is still binding, it retries ~100 ms later, reads "down"
+            // again, and spawns a second one that dies on "address already in use" —
+            // leaving whichever pid we wrote last in the discovery file, winner or
+            // loser. Waiting for the port to answer collapses that race, and taking
+            // the pid from /health means we record the process actually serving.
+            var afterSpawn = WaitForAlive(port, tokens.ClientToken);
+            if (!afterSpawn.Alive)
+            {
+                var reason = "Unity MCP: spawned server (pid " + spawnedPid + ") did not answer on port " +
+                    port + " within " + spawnGraceMs + " ms; will retry.";
+                Debug.LogWarning(reason);
+                return ServerLaunchResult.RetryLater(reason);
+            }
+
+            Debug.Log("Unity MCP: server spawned (pid " + spawnedPid + ") on port " + port + ".");
+            return UseLiveServer(afterSpawn, projectRoot, editorSessionId, editorPid, port, tokens);
+        }
+
+        /// <summary>
+        /// Decides what to do with a server that is answering on our port: reuse it,
+        /// or refuse when it belongs to a different Editor session.
+        /// </summary>
+        private static ServerLaunchResult UseLiveServer(
+            HealthProbeResult health,
+            string projectRoot,
+            string editorSessionId,
+            int editorPid,
+            int port,
+            ServerTokens tokens)
+        {
+            if (health.EditorSessionId == editorSessionId || string.IsNullOrEmpty(health.EditorSessionId))
+            {
+                // Two cases that both mean "this server is ours to use":
+                //   1. Same session ID: survived a Domain Reload, just reconnect.
+                //   2. Empty session ID: server is up but has no active Unity
+                //      connection (e.g. previous Editor exited cleanly or a
+                //      play-mode domain reload disconnected C# before [InitializeOnLoad]
+                //      ran again). Safe to take over.
+                WriteDiscovery(projectRoot, editorSessionId, editorPid, port, health.ServerPid, tokens);
+                return ServerLaunchResult.Connect(health.ServerPid);
+            }
+
+            var reason = "Unity MCP: port " + port + " is owned by another Editor session (" +
+                health.EditorSessionId + "); not taking over.";
+            Debug.LogWarning(reason);
+            return ServerLaunchResult.Refuse(reason);
+        }
+
+        /// <summary>
+        /// Polls /health until the port answers or the spawn grace runs out. Returns
+        /// the last probe result either way, so the caller can tell "came up" from
+        /// "came up owned by someone else".
+        /// </summary>
+        private HealthProbeResult WaitForAlive(int port, string clientToken)
+        {
+            var remainingMs = spawnGraceMs;
+            while (true)
+            {
+                var health = prober.Probe(port, clientToken);
+                if (health.Alive || remainingMs <= 0)
+                {
+                    return health;
+                }
+
+                sleep(SpawnPollMs);
+                remainingMs -= SpawnPollMs;
+            }
         }
 
         private static void WriteDiscovery(

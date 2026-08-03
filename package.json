@@ -1,6 +1,6 @@
 {
   "name": "com.veryfreestyle.unitymcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "displayName": "VeryFS UnityMCP",
   "description": "通过 MCP 暴露 Unity Editor 功能，让 AI 工具能直接操作 Unity Editor。\n\n可直接复制到 CLAUDE.md / AGENTS.md：\n\n## UnityMCP\n\nWhen working on this Unity project, use the project-local `unitymcp` skill. Prefer UnityMCP MCP tools for Editor status, compilation, tests, logs, scene/Game View inspection, and Editor automation.\n\nIf the `unitymcp` skill is missing or stale, ask the user to open `Window/UnityMCP - VeryFS`, enable the desired Agent Clients, and click `Install Agent Skill`.",
   "unity": "2021.3",

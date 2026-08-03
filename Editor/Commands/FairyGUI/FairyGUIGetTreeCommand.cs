@@ -30,36 +30,29 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
                 ("type", "object"),
                 ("additionalProperties", false),
                 ("properties", JsonRpcSerializer.Object(
-                    ("path", JsonRpcSerializer.Object(("type", "string"))),
+                    ("path", JsonRpcSerializer.Object(("type", "string"), ("description", FairyGUINodeLocator.PathSyntaxHelp))),
                     ("maxDepth", JsonRpcSerializer.Object(("type", "integer"), ("minimum", 0))),
                     ("includeParents", JsonRpcSerializer.Object(("type", "boolean"))),
-                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer")))))),
+                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"), ("description", FairyGUINodeLocator.PanelInstanceIdHelp)))))),
             Annotations = JsonRpcSerializer.Object(("readOnlyHint", true), ("idempotentHint", true))
         };
 
         public JsonRpcResponse Handle(JsonRpcRequest request)
         {
-            if (!source.IsPlaying)
-            {
-                return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", "not_playing"), ("truncated", false)));
-            }
             int? panelInstanceId = ReadIntNullable(request.Params, "panelInstanceId");
-            var root = panelInstanceId.HasValue ? source.GetPanelRoot(panelInstanceId.Value) : source.GetGRoot();
-            if (root == null)
-            {
-                return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", "not_found"), ("truncated", false)));
-            }
-
             string path = ReadString(request.Params, "path");
             bool includeParents = ReadBool(request.Params, "includeParents");
             int remainingDepth = ReadDepth(request.Params, "maxDepth");
 
-            var chain = ResolvePath(root, path); // includes target as last element
-            if (chain == null)
+            var chain = new List<IUINode>(); // includes target as last element
+            var located = FairyGUINodeLocator.Locate(source, panelInstanceId, path, chain);
+            if (located.State != null)
             {
-                return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", "not_found"), ("truncated", false)));
+                var failure = FairyGUINodeLocator.FailurePayload(located);
+                failure["truncated"] = false;
+                return JsonRpcResponse.FromSuccess(request.Id, failure);
             }
-            var target = chain[chain.Count - 1];
+            var target = located.Node;
 
             var serializer = new FairyGUINodeSerializer(
                 FairyGUINodeSerializer.DefaultBudgetBytes, new FairyGUIWidgetStateReader());
@@ -86,32 +79,6 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             }
             result["truncated"] = serializer.Truncated;
             return JsonRpcResponse.FromSuccess(request.Id, result);
-        }
-
-        // Returns the node chain root..target (inclusive), or null when a segment is missing.
-        private static List<IUINode> ResolvePath(IUINode root, string path)
-        {
-            var chain = new List<IUINode> { root };
-            if (string.IsNullOrEmpty(path))
-            {
-                return chain;
-            }
-            var current = root;
-            foreach (var segment in path.Split('/'))
-            {
-                if (segment.Length == 0)
-                {
-                    continue;
-                }
-                var next = FairyGUINodeLocator.MatchSegment(current, segment);
-                if (next == null)
-                {
-                    return null;
-                }
-                chain.Add(next);
-                current = next;
-            }
-            return chain;
         }
 
         private static int ReadDepth(JsonData p, string key)

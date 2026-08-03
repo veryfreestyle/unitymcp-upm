@@ -23,14 +23,15 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             RpcMethod = RpcMethods.FairyGuiSetController,
             Title = "FairyGUI / Set Controller",
             Description = "Set a GComponent controller page by page name (preferred) or index, via the " +
-                "selectedPage/selectedIndex setter (fires onChanged). Validates before writing. Play mode only.",
+                "selectedPage/selectedIndex setter (fires onChanged). Validates before writing. " +
+                "Targets that are not GComponent (GButton/GTextField/GImage/GLoader/...) return unsupported. Play mode only.",
             Completion = "response",
             FailureMode = "error",
             InputSchema = JsonRpcSerializer.Object(
                 ("type", "object"), ("additionalProperties", false),
                 ("properties", JsonRpcSerializer.Object(
-                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"))),
-                    ("path", JsonRpcSerializer.Object(("type", "string"))),
+                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"), ("description", FairyGUINodeLocator.PanelInstanceIdHelp))),
+                    ("path", JsonRpcSerializer.Object(("type", "string"), ("description", FairyGUINodeLocator.PathSyntaxHelp))),
                     ("controllerName", JsonRpcSerializer.Object(("type", "string"))),
                     ("page", JsonRpcSerializer.Object(("type", "string"))),
                     ("index", JsonRpcSerializer.Object(("type", "integer"), ("minimum", 0))))),
@@ -49,7 +50,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             var located = FairyGUINodeLocator.Locate(source, panelInstanceId, path);
             if (located.State != null)
             {
-                return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", located.State)));
+                return JsonRpcResponse.FromSuccess(request.Id, FairyGUINodeLocator.FailurePayload(located));
             }
 
             var comp = located.Node.Unwrap() as GComponent;

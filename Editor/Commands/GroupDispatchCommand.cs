@@ -140,12 +140,31 @@ namespace VeryFS.UnityMCP.Editor.Commands
                 Name = def.ToolName,
                 RpcMethod = def.Group,
                 Title = def.Title,
-                Description = def.Description,
+                Description = MergeDescriptions(def, orderedMembers),
                 Completion = def.Completion,
                 FailureMode = def.FailureMode,
                 InputSchema = inputSchema,
                 Annotations = def.Annotations
             };
+        }
+
+        // 组说明 = 组自身描述 + 逐 action 的子命令描述。子命令描述里写着类型限制与
+        // unsupported 条件, 只留 action 枚举的话调用方只能靠撞错误才发现。
+        private static string MergeDescriptions(
+            RpcGroupDefinition def, IList<IGroupedCommand> orderedMembers)
+        {
+            var builder = new System.Text.StringBuilder(def.Description ?? string.Empty);
+            builder.Append("\nActions:");
+            foreach (var member in orderedMembers)
+            {
+                builder.Append("\n- ").Append(member.Action).Append(':');
+                string childDescription = member.Descriptor?.Description;
+                if (!string.IsNullOrEmpty(childDescription))
+                {
+                    builder.Append(' ').Append(childDescription);
+                }
+            }
+            return builder.ToString();
         }
 
         private static string TypeOf(JsonData propDef)

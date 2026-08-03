@@ -40,8 +40,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             InputSchema = JsonRpcSerializer.Object(
                 ("type", "object"), ("additionalProperties", false),
                 ("properties", JsonRpcSerializer.Object(
-                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"))),
-                    ("path", JsonRpcSerializer.Object(("type", "string"))),
+                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"), ("description", FairyGUINodeLocator.PanelInstanceIdHelp))),
+                    ("path", JsonRpcSerializer.Object(("type", "string"), ("description", FairyGUINodeLocator.PathSyntaxHelp))),
                     ("to", JsonRpcSerializer.Object(("type", "object"))),
                     ("pathPoints", JsonRpcSerializer.Object(("type", "array"))),
                     ("pathShape", JsonRpcSerializer.Object(("type", "object"))),
@@ -65,7 +65,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
 
             var located = FairyGUINodeLocator.Locate(source, panelInstanceId, path);
             if (located.State != null)
-                return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", located.State)));
+                return JsonRpcResponse.FromSuccess(request.Id, FairyGUINodeLocator.FailurePayload(located));
             var obj = located.Node.Unwrap();
             if (obj == null)
                 return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", "not_found")));
@@ -104,7 +104,9 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
                 if (to.ContainsKey("toPath") && to["toPath"].IsString)
                 {
                     var toLoc = FairyGUINodeLocator.Locate(source, panelInstanceId, (string)to["toPath"]);
-                    var toObj = toLoc.State == null ? toLoc.Node.Unwrap() : null;
+                    if (toLoc.State != null)
+                        return JsonRpcResponse.FromSuccess(request.Id, FairyGUINodeLocator.FailurePayload(toLoc));
+                    var toObj = toLoc.Node.Unwrap();
                     if (toObj == null)
                         return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", "not_found")));
                     endCenter = FairyGUIGesturePlayer.CenterOf(toObj);

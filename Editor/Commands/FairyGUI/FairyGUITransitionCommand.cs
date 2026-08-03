@@ -24,14 +24,14 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             Title = "FairyGUI / Transition",
             Description = "Control a GComponent transition: op play (default) | playReverse | stop. " +
                 "stop uses stopSetToComplete (default true) to jump to end state for deterministic assertions. " +
-                "Returns playing. Play mode only.",
+                "Returns playing. Targets that are not GComponent return unsupported. Play mode only.",
             Completion = "response",
             FailureMode = "error",
             InputSchema = JsonRpcSerializer.Object(
                 ("type", "object"), ("additionalProperties", false),
                 ("properties", JsonRpcSerializer.Object(
-                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"))),
-                    ("path", JsonRpcSerializer.Object(("type", "string"))),
+                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"), ("description", FairyGUINodeLocator.PanelInstanceIdHelp))),
+                    ("path", JsonRpcSerializer.Object(("type", "string"), ("description", FairyGUINodeLocator.PathSyntaxHelp))),
                     ("transitionName", JsonRpcSerializer.Object(("type", "string"))),
                     ("op", JsonRpcSerializer.Object(("type", "string"))),
                     ("stopSetToComplete", JsonRpcSerializer.Object(("type", "boolean"))))),
@@ -49,7 +49,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
 
             var located = FairyGUINodeLocator.Locate(source, panelInstanceId, path);
             if (located.State != null)
-                return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", located.State)));
+                return JsonRpcResponse.FromSuccess(request.Id, FairyGUINodeLocator.FailurePayload(located));
 
             var comp = located.Node.Unwrap() as GComponent;
             if (comp == null)

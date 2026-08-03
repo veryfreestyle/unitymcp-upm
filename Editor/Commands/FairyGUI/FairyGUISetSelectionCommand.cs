@@ -27,8 +27,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             InputSchema = JsonRpcSerializer.Object(
                 ("type", "object"), ("additionalProperties", false),
                 ("properties", JsonRpcSerializer.Object(
-                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"))),
-                    ("path", JsonRpcSerializer.Object(("type", "string"))),
+                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"), ("description", FairyGUINodeLocator.PanelInstanceIdHelp))),
+                    ("path", JsonRpcSerializer.Object(("type", "string"), ("description", FairyGUINodeLocator.PathSyntaxHelp))),
                     ("mode", JsonRpcSerializer.Object(("type", "string"))),
                     ("index", JsonRpcSerializer.Object(("type", "integer"))),
                     ("fireEvents", JsonRpcSerializer.Object(("type", "boolean")))))),
@@ -45,7 +45,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
 
             var located = FairyGUINodeLocator.Locate(source, panelInstanceId, path);
             if (located.State != null)
-                return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", located.State)));
+                return JsonRpcResponse.FromSuccess(request.Id, FairyGUINodeLocator.FailurePayload(located));
 
             var obj = located.Node.Unwrap();
 

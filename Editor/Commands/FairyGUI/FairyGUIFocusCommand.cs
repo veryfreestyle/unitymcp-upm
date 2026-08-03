@@ -16,14 +16,15 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             Name = "fgui-focus",
             RpcMethod = RpcMethods.FairyGuiFocus,
             Title = "FairyGUI / Focus",
-            Description = "Request focus on a located GObject (e.g. GTextInput). Returns focused. Play mode only.",
+            Description = "Request focus on a located GObject (e.g. GTextInput). Accepts any GObject: " +
+                "targets that cannot take focus return state ok with focused:false instead of unsupported. Play mode only.",
             Completion = "response",
             FailureMode = "error",
             InputSchema = JsonRpcSerializer.Object(
                 ("type", "object"), ("additionalProperties", false),
                 ("properties", JsonRpcSerializer.Object(
-                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"))),
-                    ("path", JsonRpcSerializer.Object(("type", "string")))))),
+                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"), ("description", FairyGUINodeLocator.PanelInstanceIdHelp))),
+                    ("path", JsonRpcSerializer.Object(("type", "string"), ("description", FairyGUINodeLocator.PathSyntaxHelp)))))),
             Annotations = JsonRpcSerializer.Object(("idempotentHint", true))
         };
 
@@ -34,7 +35,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
 
             var located = FairyGUINodeLocator.Locate(source, panelInstanceId, path);
             if (located.State != null)
-                return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", located.State)));
+                return JsonRpcResponse.FromSuccess(request.Id, FairyGUINodeLocator.FailurePayload(located));
             var obj = located.Node.Unwrap();
             if (obj == null)
                 return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", "not_found")));

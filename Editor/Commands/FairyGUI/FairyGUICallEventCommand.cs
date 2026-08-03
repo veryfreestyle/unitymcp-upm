@@ -23,15 +23,17 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             RpcMethod = RpcMethods.FairyGuiCallEvent,
             Title = "FairyGUI / Call Event",
             Description = "Dispatch a FairyGUI EventListener (default onClick) on a located GObject via Call(). " +
-                "Supports onClick/onRightClick/onTouchBegin/onTouchEnd/onChanged/onSubmit/onRollOver/onRollOut. Play mode only.",
+                "onClick/onRightClick/onTouchBegin/onTouchEnd/onRollOver/onRollOut work on any GObject. " +
+                "onChanged needs GButton/GComboBox/GTextInput, onSubmit needs GTextInput; other types return " +
+                "unsupported, as does an event name outside this set. Play mode only.",
             Completion = "response",
             FailureMode = "error",
             InputSchema = JsonRpcSerializer.Object(
                 ("type", "object"), ("additionalProperties", false),
                 ("properties", JsonRpcSerializer.Object(
-                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"))),
-                    ("path", JsonRpcSerializer.Object(("type", "string"))),
-                    ("event", JsonRpcSerializer.Object(("type", "string")))))),
+                    ("panelInstanceId", JsonRpcSerializer.Object(("type", "integer"), ("description", FairyGUINodeLocator.PanelInstanceIdHelp))),
+                    ("path", JsonRpcSerializer.Object(("type", "string"), ("description", FairyGUINodeLocator.PathSyntaxHelp))),
+                    ("event", EventSchema())))),
             Annotations = JsonRpcSerializer.Object(("idempotentHint", false))
         };
 
@@ -44,7 +46,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             var located = FairyGUINodeLocator.Locate(source, panelInstanceId, path);
             if (located.State != null)
             {
-                return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(("state", located.State)));
+                return JsonRpcResponse.FromSuccess(request.Id, FairyGUINodeLocator.FailurePayload(located));
             }
 
             var obj = located.Node.Unwrap();
@@ -64,6 +66,29 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
                 ("defaultPrevented", defaultPrevented),
                 ("target", JsonRpcSerializer.Object(
                     ("name", obj.name ?? string.Empty), ("type", obj.GetType().Name)))));
+        }
+
+        // event 白名单进 schema, 让调用方直接看到可选值, 而不是撞 unsupported 才知道。
+        private static readonly string[] SupportedEvents =
+        {
+            "onClick", "onRightClick", "onTouchBegin", "onTouchEnd",
+            "onRollOver", "onRollOut", "onChanged", "onSubmit"
+        };
+
+        private static JsonData EventSchema()
+        {
+            var schema = JsonRpcSerializer.Object(
+                ("type", "string"),
+                ("description", "Event to dispatch; defaults to onClick. " +
+                    "onChanged requires GButton/GComboBox/GTextInput, onSubmit requires GTextInput."));
+            var values = new JsonData();
+            values.SetJsonType(JsonType.Array);
+            foreach (var name in SupportedEvents)
+            {
+                values.Add(name);
+            }
+            schema["enum"] = values;
+            return schema;
         }
 
         // 白名单事件名 -> GObject 的 EventListener 属性; 未知返 null。

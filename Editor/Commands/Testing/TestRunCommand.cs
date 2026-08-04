@@ -377,6 +377,11 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             // 后一条的判定 (store.LoadAll 按文件名哈希排序, accepted 排在 running 前面时, 前者
             // 清了标志, 后面本应续跑的 running entry 就被误判成中断)。
             // running entry 正常只会有一条 (在飞的那次运行); 多出来的按并发残留一并终结。
+            // 挑哪一条不能看 store.LoadAll() 的返回顺序 —— 它按 SHA256 文件名排序, 与
+            // StartedAt 毫无关系。取"第一条 running"在多条 running 并存时等于抛硬币: 挑错
+            // 就把真正在飞的那条报成 test_run_interrupted, 而 tracker 继续被那次真实运行的
+            // 进度喂着 (Adopt 把槽位指向了残留记录, 进度判据照样成立), 调用方看到"运行还在
+            // 跑但请求已中断", 最后由残留记录的老死线报 request_timeout, 结果整份丢弃。
             PendingRefreshRequest running = null;
             var others = new List<PendingRefreshRequest>();
             foreach (var entry in store.LoadAll())
@@ -386,8 +391,13 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
                     continue;
                 }
 
-                if (running == null && entry.ExecutionState == "running")
+                if (entry.ExecutionState == "running" && IsNewerRunning(entry, running))
                 {
+                    if (running != null)
+                    {
+                        others.Add(running);
+                    }
+
                     running = entry;
                 }
                 else
@@ -427,6 +437,20 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             {
                 Release("test_run_interrupted");
             }
+        }
+
+        // 两条 running 记录之间谁更像"真正在飞的那次": StartedAt 更晚的那条。
+        private static bool IsNewerRunning(PendingRefreshRequest candidate, PendingRefreshRequest incumbent)
+            => incumbent == null || StartedAtOf(candidate) > StartedAtOf(incumbent);
+
+        // 时间戳缺失或解析不出来的当最旧 —— 宁可让一条坏记录落进 others 被终结, 也不能让它
+        // 顶掉一条时间戳完好的在飞记录。
+        private static DateTimeOffset StartedAtOf(PendingRefreshRequest entry)
+        {
+            return entry != null && !string.IsNullOrEmpty(entry.StartedAt) &&
+                   DateTimeOffset.TryParse(entry.StartedAt, out var parsed)
+                ? parsed
+                : DateTimeOffset.MinValue;
         }
 
         private void Adopt(PendingRefreshRequest entry)
@@ -636,7 +660,12 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             Release(inFlightAbandoned ? "request_timeout" : "test_run_interrupted");
         }
 
-        // 只放闸: 绝不碰 entry 的状态 —— 走到这里 entry 早已终态, 甚至已被 report 循环删掉。
+        // 放闸, 并顺带终结仍滞留在 processing 的本方法记录。走到这里 entry 通常已经终态
+        // (甚至已被 report 循环删掉), 对它们下面那趟是 no-op; 但 Tick 的
+        // "槽位被 reload 冲掉" 分支不保证这一点 —— ResumeAfterReload 在 [InitializeOnLoad]
+        // 的 try 块里只调一次, 那里的任何异常只写 LogWarning。放闸意味着这次运行已经没有
+        // 终态可等, 滞留的 processing 记录不但让调用方永远等不到答复, 还会在下一次 domain
+        // reload 时跟新记录一起进认领候选 (见 ResumeAfterReload)。
         private void Release(string errorCode)
         {
             // 先清槽位再动 tracker, 理由同 Complete: MarkFinished 抛异常不该连累前者也漏掉。
@@ -644,9 +673,24 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             inFlightDeadline = null;
             inFlightAbandoned = false;
             resumedAt = null;
-            if (tracker.IsRunning)
+            try
             {
-                tracker.MarkFinished(JsonRpcSerializer.Object(("errorCode", errorCode)));
+                foreach (var entry in store.LoadAll())
+                {
+                    if (entry != null && entry.Method == Method && entry.State == "processing")
+                    {
+                        MarkEntryFailed(entry.OriginRequestId, errorCode);
+                    }
+                }
+            }
+            finally
+            {
+                // 读盘/写盘抛异常也不能漏放闸 —— 运行标志卡死会挡住本次 Editor 会话剩余
+                // 时间里所有非白名单命令, 调用方自己解不开。
+                if (tracker.IsRunning)
+                {
+                    tracker.MarkFinished(JsonRpcSerializer.Object(("errorCode", errorCode)));
+                }
             }
         }
 

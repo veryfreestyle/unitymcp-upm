@@ -25,6 +25,23 @@ namespace VeryFS.UnityMCP.Editor.Protocol
         public const string FairyGuiDoubleClick = "fgui.double-click";
         public const string FairyGuiGesture = "fgui.gesture";
         public const string FairyGuiHover = "fgui.hover";
+
+        // fgui.input 的新一批 action。路由 key 仍是组名 fgui.input,
+        // 这些常量只作标识与日志用 (grouped command 不进 byMethod)。
+        public const string FairyGuiInputMove = "fgui.input.move";
+        public const string FairyGuiInputClick = "fgui.input.click";
+        public const string FairyGuiInputDoubleClick = "fgui.input.double-click";
+        public const string FairyGuiInputPress = "fgui.input.press";
+        public const string FairyGuiInputRelease = "fgui.input.release";
+        public const string FairyGuiInputDrag = "fgui.input.drag";
+        public const string FairyGuiInputWheel = "fgui.input.wheel";
+        public const string FairyGuiInputSendKey = "fgui.input.send-key";
+        public const string FairyGuiInputTypeText = "fgui.input.type-text";
+        public const string FairyGuiInputStep = "fgui.input.step";
+        public const string FairyGuiInputBeginSession = "fgui.input.begin-session";
+        public const string FairyGuiInputEndSession = "fgui.input.end-session";
+        public const string FairyGuiInputVisualize = "fgui.input.visualize";
+
         public const string GameObjectFind = "gameobject.find";
         public const string GameObjectComponentGet = "gameobject.component-get";
         public const string EditorSceneGet = "editor.scene.get";

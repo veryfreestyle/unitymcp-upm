@@ -416,16 +416,25 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             bool adopted = false;
             if (running != null)
             {
-                if (tracker.IsRunning)
+                // 判据是 entry 而不是 tracker.IsRunning。原来按标志判"上一轮是不是收过尾",
+                // 前提是 SessionState 抗 domain reload —— 实测被推翻: PlayMode 跑测中间还有
+                // 第二次 reload, 那一次 SessionState 会被整体清空 (running/mode/startedAt/
+                // progressAt 一起变空), 而框架里那次运行好端端在跑。按旧判据每次 PlayMode
+                // 跑测都会在第二次 reload 把自己判成 test_run_interrupted: 调用方拿不到结果,
+                // 20 秒后送到的终态因为 entry 已终态被整份丢弃, 闸门还要一直关到墙钟天花板。
+                //
+                // entry 在磁盘上, 才是真正抗 reload 的事实。真收过尾的话它必然已经是终态
+                // (Complete / Fail 都会写它), 走不到这里 —— 上面只挑 state == "processing"
+                // 的记录。所以"还是 processing"就等于"还没收尾", 认领是对的。
+                if (!tracker.IsRunning)
                 {
-                    Adopt(running);
-                    adopted = true;
+                    // 标志跟着重建, 否则闸门形同虚设(这次运行期间所有命令都能挤进来)。
+                    // 按 entry 原始 StartedAt 走: 用当前时间会把 init 超时窗口整个往后拉。
+                    tracker.RestoreStarted(TestModeOf(running), StartedAtOf(running));
                 }
-                else
-                {
-                    // 运行标志已清 = 上一轮已经收尾过, 认领只会让请求干等到墙钟天花板 —— 直接终结。
-                    MarkEntryFailed(running.OriginRequestId, "test_run_interrupted");
-                }
+
+                Adopt(running);
+                adopted = true;
             }
 
             // 兜底: 没有任何在飞运行被认领, 而运行标志仍立着 (counting 阶段被打断留下的孤儿标志,
@@ -433,9 +442,24 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             // 顺带清 tracker 覆盖它: domain reload 后 inFlightRequestId 已是 null, Tick 头一个
             // guard 直接返回, RecoverPending 也不再管已终态的 entry, 一旦这里漏清, transport gate
             // 会挡住本次 Editor 会话剩余时间里所有非白名单命令, 调用方自己解不开。
+
             if (!adopted && tracker.IsRunning)
             {
                 Release("test_run_interrupted");
+            }
+        }
+
+        // 记录里存的 testMode。重建 tracker 状态时要按它走 —— test.status 汇报的 testMode
+        // 来自这里, 猜错会让调用方以为跑的是另一种模式。
+        private static string TestModeOf(PendingRefreshRequest entry)
+        {
+            try
+            {
+                return FilterOf(JsonMapper.ToObject(entry.TargetState)).TestMode;
+            }
+            catch (Exception)
+            {
+                return "EditMode";
             }
         }
 
@@ -594,6 +618,12 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             var entry = Find(requestId);
             if (entry == null || entry.State != "processing")
             {
+                // 记录侧已经没什么可写了(被别处终结, 或 report 投递成功后 store.Delete 掉了),
+                // 但槽位和运行标志还挂着 —— 早退不清就没人能清了: 槽位非空会让 Tick 继续走
+                // "有在飞请求"那条路, 每一轮都在这里原地返回, ReleaseIfRunStopped 那道兜底
+                // 永远够不着, 闸门在本次 Editor 会话剩余时间里再也打不开。实测过一次: 调用方
+                // 只剩重启 Editor 一条路。
+                ClearInFlight(errorCode);
                 return;
             }
 
@@ -609,15 +639,36 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
                 // 同 Complete 的加固: store.Save 抛异常也不能漏清 —— test_run_interrupted 这条
                 // 由 RecoverPending 触发, domain reload 后 inFlightRequestId 已经是 null, Tick
                 // 的头一个 guard 直接返回, 一旦这里漏清 tracker 就再没人能清了。
-                if (tracker.IsRunning)
-                {
-                    tracker.MarkFinished(JsonRpcSerializer.Object(("errorCode", errorCode)));
-                }
+                ClearInFlight(errorCode);
+            }
+        }
 
-                inFlightRequestId = null;
-                inFlightDeadline = null;
-                inFlightAbandoned = false;
-                resumedAt = null;
+        // 被丢弃的那笔终态是不是本次运行的。上一次会话/上一轮运行留下的旧账不算 ——
+        // 否则新运行刚起步就会被它放闸。
+        private bool FrameworkFinishedAfterRunStarted()
+        {
+            var discardedAt = runner.LastDiscardedFinishAt;
+            if (!discardedAt.HasValue)
+            {
+                return false;
+            }
+
+            var startedAt = tracker.StartedAt;
+            return !startedAt.HasValue || discardedAt.Value > startedAt.Value;
+        }
+
+        // 判死这次请求之后的收尾: 槽位与运行标志一起清。先清槽位再动 tracker, 理由同
+        // Complete —— MarkFinished 抛异常不该连累前者也漏掉。
+        private void ClearInFlight(string errorCode)
+        {
+            inFlightRequestId = null;
+            inFlightDeadline = null;
+            inFlightAbandoned = false;
+            resumedAt = null;
+
+            if (tracker.IsRunning)
+            {
+                tracker.MarkFinished(JsonRpcSerializer.Object(("errorCode", errorCode)));
             }
         }
 
@@ -644,6 +695,16 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         // (整个 Editor 会话里所有非白名单命令被挡死, 调用方自己解不开)。
         private void ReleaseIfRunStopped()
         {
+            // 框架把终态投递过来、只是被身份判据丢弃了 (reload 之后回调随旧对象一起没了,
+            // 新对象的槽位是空的) —— 这是"运行确实结束了"的直接证据, 比停滞推断硬。
+            // 只在槽位真空时认它: inFlightAbandoned 那条路上运行可能还活着 (墙钟到点 ≠ 运行
+            // 结束, TestRunnerApi 没有 Cancel), 而丢弃的那笔账可能是旁边手工跑的那次。
+            if (!inFlightAbandoned && FrameworkFinishedAfterRunStarted())
+            {
+                Release("test_run_interrupted");
+                return;
+            }
+
             // 用 LastProgressAt 而不是 CurrentCaseStartedAt: 后者只在用例名变化时刷新, 一个跑
             // 一分钟以上的用例会被它误判成停滞, 于是在运行还活着时放闸 —— 正是要防的那件事。
             // 一次进度都没来过时退回 StartedAt, 让静默的运行同样有一个有限的等待窗口。

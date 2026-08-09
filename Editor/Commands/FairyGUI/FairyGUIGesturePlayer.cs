@@ -21,17 +21,12 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             this.maxFrames = maxFrames;
         }
 
-        // Stage → 屏幕坐标: Y 翻转。
-        // 依据 Stage.cs GetHitTarget/UpdateTouchPosition/HandleCustomInput 内部对 _customInputPos 做
-        // `pos.y = _contentRect.height - pos.y` (Stage.cs:852/1044/1106), 且 stageHeight = (int)_contentRect.height
-        // (Stage.cs:21)。LocalToGlobal 返回的 Stage 坐标 Y 向下、逻辑像素, 故 screenY = stageSize.y - stageY。
+        // 换算逻辑与依据见 FairyGUIScreenPoint; 这里保留签名给 legacy 调用方与既有测试。
         public static Vector2 StageToScreen(Vector2 stagePos, Vector2 stageSize)
-            => new Vector2(stagePos.x, stageSize.y - stagePos.y);
+            => FairyGUIScreenPoint.StageToScreen(stagePos, stageSize);
 
-        // 控件中心的 Stage 坐标。obj.LocalToGlobal (GObject.cs:1501) 把局部点转 Stage 全局坐标;
-        // width/height (GObject.cs:482/497) 为控件像素尺寸。
         public static Vector2 CenterOf(GObject obj)
-            => obj.LocalToGlobal(new Vector2(obj.width / 2f, obj.height / 2f));
+            => FairyGUIScreenPoint.CenterOf(obj);
 
         // 推进一帧 (先喂输入再 yield)。返回 false 表示已超帧上限。
         private async UniTask<bool> Step(Vector2 pos, bool down)

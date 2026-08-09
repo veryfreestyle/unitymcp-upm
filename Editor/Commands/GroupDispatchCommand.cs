@@ -143,6 +143,7 @@ namespace VeryFS.UnityMCP.Editor.Commands
                 Description = MergeDescriptions(def, orderedMembers),
                 Completion = def.Completion,
                 FailureMode = def.FailureMode,
+                DefaultTimeoutMs = def.DefaultTimeoutMs,
                 InputSchema = inputSchema,
                 Annotations = def.Annotations
             };

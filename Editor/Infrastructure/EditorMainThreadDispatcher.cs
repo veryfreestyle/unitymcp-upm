@@ -9,7 +9,9 @@ namespace VeryFS.UnityMCP.Editor.Infrastructure
     internal sealed class EditorMainThreadDispatcher : IDisposable
     {
         private readonly ConcurrentQueue<Func<Task>> work = new ConcurrentQueue<Func<Task>>();
-        private bool disposed;
+        // Enqueue is reached from the RPC receive loop's thread pool thread, so this flag
+        // is read off the main thread that writes it.
+        private volatile bool disposed;
 
         public EditorMainThreadDispatcher()
         {

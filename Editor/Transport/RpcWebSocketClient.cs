@@ -19,6 +19,11 @@ namespace VeryFS.UnityMCP.Editor.Transport
         // attempt is abandoned and retried rather than left for the peer to reap.
         private const int DefaultConnectTimeoutMs = 5000;
 
+        // How long Dispose() gives the receive loop to unwind. Long enough for a loop
+        // parked in a cancelled read or midway through raising MessageReceived, short
+        // enough that a wedged one delays a domain reload rather than blocking it.
+        private const int DisposeReceiveDrainMs = 200;
+
         private readonly Uri endpoint;
         private readonly string bearerToken;
         private readonly int connectTimeoutMs;
@@ -51,6 +56,13 @@ namespace VeryFS.UnityMCP.Editor.Transport
             this.connectTimeoutMs = connectTimeoutMs;
         }
 
+        // Both raised off the Editor's main thread — see ReceiveLoopAsync for why.
+        // Subscribers that touch Unity APIs have to marshal for themselves.
+        //
+        // MessageReceived is ordered against itself: one loop raises it, and that loop
+        // awaits the next read before raising again. ConnectionClosed carries no such
+        // guarantee — the send path raises it too, so it can fire concurrently with a
+        // MessageReceived already in flight.
         public event Action<string> MessageReceived;
         public event Action<Exception> ConnectionClosed;
 
@@ -269,6 +281,7 @@ namespace VeryFS.UnityMCP.Editor.Transport
 
         public void Dispose()
         {
+            Task loop;
             lock (sync)
             {
                 if (disposed)
@@ -276,6 +289,7 @@ namespace VeryFS.UnityMCP.Editor.Transport
                     return;
                 }
 
+                loop = receiveTask;
                 disposed = true;
                 receiveCancellation?.Cancel();
                 webSocket?.Dispose();
@@ -296,55 +310,109 @@ namespace VeryFS.UnityMCP.Editor.Transport
                 receiveCancellation?.Dispose();
             }
 
+            // Outside the lock, and it has to be: the loop reaches SignalClosed on its way
+            // out, which takes this same lock.
+            //
+            // Waiting at all is new. While the loop resumed on the Editor's
+            // synchronization context it could not run concurrently with a Dispose()
+            // called from the main thread, so there was nothing to wait for — and waiting
+            // would have deadlocked, since the loop needed the very thread doing the
+            // waiting. On the thread pool it can be mid-MessageReceived right now, and
+            // unsubscribing does not recall a call already in flight.
+            //
+            // That matters because RpcConnectionLoop.Dispose() runs synchronously from
+            // beforeAssemblyReload: whatever is still running when this returns keeps
+            // touching this domain's state while it is torn down, and its handler ends up
+            // calling into an already-disposed dispatcher. Bounded rather than unbounded
+            // because a stuck loop must not be able to hang a domain reload; the
+            // cancellation and the closed socket above are what actually stop it, and this
+            // only gives it the moment it needs to unwind.
+            try
+            {
+                loop?.Wait(DisposeReceiveDrainMs);
+            }
+            catch (AggregateException)
+            {
+                // Only waiting for the loop to stop, not for it to have succeeded. A loop
+                // that ended on a protocol violation reports that through ReceiveTask,
+                // which callers read; rethrowing it here would turn every such teardown
+                // into a failure at the wrong layer.
+            }
+
             sendLock.Dispose();
         }
 
-        private async Task ReceiveLoopAsync(WebSocket socket, CancellationToken cancellationToken)
+        // Runs off the Editor's synchronization context, for the same reason
+        // ConnectAndHandshakeAsync does and with more riding on it. A message arrives in
+        // as many chunks as the WebSocket's receive buffer allows and every chunk resumes
+        // this loop once; left on that context each of those resumes waits for an Editor
+        // tick. Measured on 2022.3.62f3 by timing the two halves separately: the read
+        // itself costs 0.30 ms, while getting back onto the context costs 51 ms with the
+        // Editor focused and 100 ms without. The same resume off the context costs about
+        // 79 us.
+        //
+        // Large messages are only the loud symptom. Every inbound message used to spend
+        // one tick arriving here and a second reaching the main thread through the
+        // dispatcher; only the dispatcher hop is left, so each RPC round trip sheds
+        // roughly 50 ms whatever its size.
+        //
+        // MessageReceived and ConnectionClosed consequently fire on a thread pool thread.
+        // RpcConnectionLoop's handlers are built for that: every command runs through
+        // EditorMainThreadDispatcher rather than inline, the test-run gate reads a
+        // volatile mirror field instead of an Editor API, and the command registry
+        // publishes itself under a lock and is read-only afterwards.
+        private Task ReceiveLoopAsync(WebSocket socket, CancellationToken cancellationToken)
         {
-            var buffer = new byte[8192];
-
-            try
+            return Task.Run(async () =>
             {
-                while (!cancellationToken.IsCancellationRequested)
+                // Matches the WebSocket's own receive buffer deliberately. That buffer is
+                // what bounds a single ReceiveAsync, so a smaller one here would be the
+                // binding constraint and a larger one would never be filled.
+                var buffer = new byte[WebSocketHandshake.ReceiveBufferSize];
+
+                try
                 {
-                    using (var message = new MemoryStream())
+                    while (!cancellationToken.IsCancellationRequested)
                     {
-                        WebSocketReceiveResult result;
-                        do
+                        using (var message = new MemoryStream())
                         {
-                            result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
-                            if (result.MessageType == WebSocketMessageType.Close)
+                            WebSocketReceiveResult result;
+                            do
                             {
-                                SignalClosed(socket, null);
-                                return;
-                            }
+                                result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
+                                if (result.MessageType == WebSocketMessageType.Close)
+                                {
+                                    SignalClosed(socket, null);
+                                    return;
+                                }
 
-                            if (result.MessageType != WebSocketMessageType.Text)
-                            {
-                                throw new InvalidOperationException("RPC WebSocket messages must be UTF-8 text.");
-                            }
+                                if (result.MessageType != WebSocketMessageType.Text)
+                                {
+                                    throw new InvalidOperationException("RPC WebSocket messages must be UTF-8 text.");
+                                }
 
-                            if (message.Length + result.Count > MaxMessageSizeBytes)
-                            {
-                                throw new InvalidOperationException("RPC WebSocket message exceeds 8 MiB.");
-                            }
+                                if (message.Length + result.Count > MaxMessageSizeBytes)
+                                {
+                                    throw new InvalidOperationException("RPC WebSocket message exceeds 8 MiB.");
+                                }
 
-                            message.Write(buffer, 0, result.Count);
+                                message.Write(buffer, 0, result.Count);
+                            }
+                            while (!result.EndOfMessage);
+
+                            MessageReceived?.Invoke(Encoding.UTF8.GetString(message.GetBuffer(), 0, (int)message.Length));
                         }
-                        while (!result.EndOfMessage);
-
-                        MessageReceived?.Invoke(Encoding.UTF8.GetString(message.GetBuffer(), 0, (int)message.Length));
                     }
                 }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-            }
-            catch (Exception ex)
-            {
-                SignalClosed(socket, ex);
-                throw;
-            }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                }
+                catch (Exception ex)
+                {
+                    SignalClosed(socket, ex);
+                    throw;
+                }
+            });
         }
 
         // Cleans up after a handshake we have stopped waiting on. Two things can arrive

@@ -15,12 +15,15 @@ namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
         private readonly IGameViewCapturer capturer;
         private readonly string screenshotDir;
         private readonly IIdGenerator ids;
+        private readonly string projectRoot;
 
-        public ScreenshotGameViewCommand(IGameViewCapturer capturer, string screenshotDir, IIdGenerator ids)
+        public ScreenshotGameViewCommand(
+            IGameViewCapturer capturer, string screenshotDir, IIdGenerator ids, string projectRoot)
         {
             this.capturer = capturer;
             this.screenshotDir = screenshotDir;
             this.ids = ids;
+            this.projectRoot = projectRoot;
         }
 
         public string Method => RpcMethods.ScreenshotGameView;
@@ -30,7 +33,12 @@ namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
             Name = "screenshot-game-view",
             RpcMethod = RpcMethods.ScreenshotGameView,
             Title = "Screenshot / Game View",
-            Description = "Capture the Editor Game View and return it as an image for visual inspection. Requires an open Game View.",
+            Description = "Capture the Editor Game View for visual inspection. Requires an open Game View. " +
+                "The file path and metadata always come back as text; inlineImage controls the base64 image block: " +
+                "omit it for the project default (set in the Server Monitor window), true to see the picture in this turn, " +
+                "false to save context and read the file at the returned path instead. " +
+                "The inline image stays in the conversation history for the rest of the session. " +
+                "If you cannot read image content returned by MCP tools, always pass false and open the file at the returned path instead.",
             Completion = "response",
             FailureMode = "error",
             InputSchema = JsonRpcSerializer.Object(
@@ -39,7 +47,10 @@ namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
                 ("properties", JsonRpcSerializer.Object(
                     ("maxEdge", JsonRpcSerializer.Object(("type", "integer"), ("minimum", MinEdge), ("maximum", MaxEdge))),
                     ("format", JsonRpcSerializer.Object(("type", "string"), ("enum", Enum("png", "jpeg")))),
-                    ("quality", JsonRpcSerializer.Object(("type", "integer"), ("minimum", 1), ("maximum", 100)))))),
+                    ("quality", JsonRpcSerializer.Object(("type", "integer"), ("minimum", 1), ("maximum", 100))),
+                    // No schema "default" on purpose: the real default lives in EditorPrefs and can
+                    // change at any time, so pinning one here would create a second source of truth.
+                    ("inlineImage", JsonRpcSerializer.Object(("type", "boolean")))))),
             Annotations = JsonRpcSerializer.Object(("readOnlyHint", true), ("idempotentHint", true))
         };
 
@@ -55,6 +66,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
             int maxEdge = ClampMaxEdge(ReadInt(request.Params, "maxEdge", DefaultEdge));
             string format = ReadString(request.Params, "format") ?? "png";
             int quality = ReadInt(request.Params, "quality", 85);
+            bool inlineImage = ReadBoolNullable(request.Params, "inlineImage")
+                ?? ScreenshotPreferences.LoadInlineImageDefault(projectRoot);
 
             var capture = capturer.Capture(maxEdge);
             if (!capture.Ok)
@@ -101,7 +114,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
                     ("width", capture.Width),
                     ("height", capture.Height),
                     ("mimeType", mimeType),
-                    ("byteCount", bytes.Length)))));
+                    ("byteCount", bytes.Length))),
+                ("inlineImage", inlineImage)));
         }
 
         private static JsonData Enum(params string[] values)
@@ -114,6 +128,11 @@ namespace VeryFS.UnityMCP.Editor.Commands.Screenshot
 
         private static int ReadInt(JsonData p, string key, int fallback) =>
             p != null && p.IsObject && p.ContainsKey(key) && p[key].IsInt ? (int)p[key] : fallback;
+
+        // Nullable so an explicit false is distinguishable from an absent field:
+        // absent falls back to EditorPrefs, false does not.
+        private static bool? ReadBoolNullable(JsonData p, string key) =>
+            p != null && p.IsObject && p.ContainsKey(key) && p[key].IsBoolean ? (bool?)(bool)p[key] : null;
 
         private static string ReadString(JsonData p, string key) =>
             p != null && p.IsObject && p.ContainsKey(key) && p[key].IsString ? (string)p[key] : null;

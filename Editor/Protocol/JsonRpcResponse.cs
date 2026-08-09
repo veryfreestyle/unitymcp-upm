@@ -34,5 +34,14 @@ namespace VeryFS.UnityMCP.Editor.Protocol
         {
             return new JsonRpcResponse(null, id, null, error);
         }
+
+        // 响应体的完整 wire JSON。与 RpcConnectionLoop.SerializeResponse 同构 ——
+        // 那边是发送路径的私有实现, 这里是给测试和其他调用方用的公开只读视图。
+        public string ToJson()
+        {
+            return Error == null
+                ? JsonRpcSerializer.SerializeSuccess(Id, Result)
+                : JsonRpcSerializer.SerializeError(Id, Error.Code, Error.Message, Error.Data);
+        }
     }
 }

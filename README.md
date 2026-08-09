@@ -82,10 +82,63 @@ Server 通过 `tools/list` 暴露 17 个工具；精确参数、schema 与错误
 | 场景与资源 | `scene`、`gameobject`、`asset` | 打开/保存场景，查询场景对象、组件、AssetDatabase 与 prefab 内容。 |
 | Game View | `game-view`、`screenshot-game-view` | 查看/设置 Game View 分辨率、最大化状态并截图。 |
 | Test Runner | `test-list`、`test-run`、`test-status` | 发现测试程序集、运行 EditMode / PlayMode 测试、查询运行进度或最终结果。 |
-| FairyGUI | `fgui-query`、`fgui-state`、`fgui-input` | 查询 FairyGUI 层级，设置控件状态，走真实输入管线执行 click / gesture 等交互。 |
+| FairyGUI | `fgui-query`、`fgui-state`、`fgui-input` | 查询 FairyGUI 层级，读写控件状态，走真实输入管线执行指针、键盘、滚轮交互。 |
 | 编排 | `batch-execute` | 串行执行多条普通 RPC 子命令，减少多步 UI 自动化往返。 |
 
+### `fgui-input` 的两套 action
+
+`fgui-input` 的 action 集取决于项目装的 FairyGUI 包：
+
+- 装了带输入注入的改造版（`Stage.inputSource` / `StageInputSimulator`）时是 13 个 action：
+  `move`、`click`、`double-click`、`press`、`release`、`drag`、`wheel`、`send-key`、`type-text`、
+  `step`、`begin-session`、`end-session`、`visualize`。
+- 装的是上游原版时自动降级为 4 个：`click`、`double-click`、`gesture`、`hover`，行为与升级前一致。
+
+选择发生在插件装配期，之后不再切换。降级时 Unity Console 会有一条 `compatibility mode` 的
+warning 写明缺哪个成员。AI 侧不需要知道装的是哪个包——`tools/list` 里的 action 枚举就是能力声明。
+
+`Pointer speed base (px/s)`、`Wheel scale`、`Input visualizer` 三项在 Server Monitor Window 里按项目配置，
+不进工具参数面：AI 永远只给 `speedScale: 1` 和 `delta: 3`，平台与分辨率差异由装它的人调一次。
+
+### `batch-execute` 里调用分组工具
+
+`fgui-input`、`fgui-state`、`fgui-query` 这类分组工具在 `batch-execute` 里 `tool` 字段填的是
+rpcMethod（分组工具的 rpcMethod 是组名，如 `fgui.input`，不是 `fgui-input`），实际动作在
+`params.action` 里指定。`batch-execute` 本身已经等价于一段隐式的 `fgui-input` session（批
+开始时接管指针/键盘，批结束时归还），批内的 `press` / `move` / `release` 等 action 可以直接
+串联，不需要再显式开会话。批内仍然可以调这两个 action，只是通常没有意义：`begin-session`
+会因为批的会话已经开着而返回 `conflict`；`end-session` 只作用于显式会话——批外先开了显式
+会话时它会结束那一个（批自身的隐式会话不受影响，照样活到批尾），没有显式会话时返回
+`no_session`。
+
+```json
+{
+  "commands": [
+    {"tool": "fgui.input", "params": {"action": "press", "path": "MainPanel/card"}},
+    {"tool": "fgui.input", "params": {"action": "move", "x": 600, "y": 300}},
+    {"tool": "screenshot.game-view", "params": {"inlineImage": false}},
+    {"tool": "fgui.input", "params": {"action": "release"}}
+  ]
+}
+```
+
+批内穿插截图看拖拽中途是推荐用法，配合 `inlineImage: false` 让返回只剩路径与宽高、避免
+base64 埋进聚合 JSON。**批调用本身即使子命令失败也返回成功，必须逐条检查 `results`**，
+不能只看外层调用有没有报错。
+
 常用测试流程：先 `assets-refresh`，再用 `test-list` 取程序集名，然后调用 `test-run`。`test-run` 超时只表示 MCP 调用等到上限，不代表测试失败；继续用 `test-status` 读取最终结果。
+
+`screenshot-game-view` 始终把截图文件路径与宽高、字节数作为文本返回；可选参数
+`inlineImage` 控制是否附带 base64 内联图片块。省略该参数时按项目级默认值走，默认
+值在 Server Monitor 窗口的 **Screenshot / Inline base64 image content** 开关里配置
+（存于 `EditorPrefs`，按项目隔离，未配置时为开）——那只是默认值，单次调用传
+`inlineImage` 一律以调用为准。关掉内联图片可以显著减少长会话里的 context 占用
+（内联进去的图会在会话历史里常驻到结束），需要看图时再单次显式传
+`inlineImage: true`，或者按返回的 `path` 自己读文件。
+
+读不了 MCP image content 的 client 应该一律传 `inlineImage: false`，改用返回的
+`path` 自己开文件——附带的 base64 对它是纯浪费。工具说明里写的是这个能力条件而
+不是具体产品名：能不能吃 image content 随 client 版本变，写死名单会过期。
 
 ---
 

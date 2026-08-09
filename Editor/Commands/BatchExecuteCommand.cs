@@ -17,15 +17,18 @@ namespace VeryFS.UnityMCP.Editor.Commands
         private readonly RpcCommandRegistry registry;
         private readonly IFrameStepper frameStepper;
         private readonly IDelayProvider delayProvider;
+        private readonly IMcpImplicitSessionHost inputSessions;
 
         public BatchExecuteCommand(
             RpcCommandRegistry registry,
             IFrameStepper frameStepper,
-            IDelayProvider delayProvider)
+            IDelayProvider delayProvider,
+            IMcpImplicitSessionHost inputSessions)
         {
             this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
             this.frameStepper = frameStepper ?? throw new ArgumentNullException(nameof(frameStepper));
             this.delayProvider = delayProvider ?? throw new ArgumentNullException(nameof(delayProvider));
+            this.inputSessions = inputSessions ?? throw new ArgumentNullException(nameof(inputSessions));
         }
 
         public string Method => RpcMethods.BatchExecute;
@@ -37,13 +40,18 @@ namespace VeryFS.UnityMCP.Editor.Commands
             Title = "Batch / Execute",
             Description =
                 "Run a sequence of RPC sub-commands serially in one call and return their aggregated results. " +
-                "Each entry is {\"tool\": <rpcMethod>, \"params\": {...}}. Sub-commands run in order; results align " +
+                "Each entry is {\"tool\": <rpcMethod>, \"params\": {...}}." +
+                " For grouped tools the rpcMethod is the group, with the action in params: " +
+                "{\"tool\":\"fgui.input\",\"params\":{\"action\":\"click\",\"path\":\"MainPanel/btn\"}}." +
+                " Sub-commands run in order; results align " +
                 "by index. failFast (default false): stop after the first failing sub-command (a sub-command fails " +
                 "when it returns an error). Pseudo-command \"wait\" pauses between steps: " +
                 "{\"tool\":\"wait\",\"params\":{\"ms\":500}} or {\"tool\":\"wait\",\"params\":{\"frames\":3}} " +
                 "(ms and frames are mutually exclusive; no upper bound — bound the whole batch via timeoutMs). " +
                 "NOT supported as sub-commands: assets.refresh, editor.application.set-state, test.run " +
-                "(long-running), and batch.execute (no nesting).",
+                "(long-running), and batch.execute (no nesting)." +
+                " The batch call itself succeeds even when sub-commands fail: always check each entry in " +
+                "results, not just the top-level response.",
             Completion = "response",
             FailureMode = "error",
             DefaultTimeoutMs = 300000,
@@ -91,13 +99,30 @@ namespace VeryFS.UnityMCP.Editor.Commands
             int successCount = 0;
             int failureCount = 0;
 
-            for (int i = 0; i < commands.Count; i++)
+            // 批内含指针类调用时, 一批共用一次接管: 逐条各开各关会在命令之间清掉
+            // TouchInfo, 拖拽中途插一张截图就断了。batch 禁嵌套、禁长耗时命令,
+            // 所以边界天然不重叠; 批开始时已有显式 session 则沿用, 不另开也不在批尾关。
+            //
+            // 不能再写成 using(...): 批尾如果真的要关闭底层 session 且还有按钮按着,
+            // 必须先 await 一次 ReleaseHeld(review Important 4) —— using 生成的 Dispose
+            // 是同步调用点, 塞不进一次跨帧的 await。改成显式 try/finally, finally 里
+            // await EndImplicitSessionAsync, 语义跟 using 一致(正常退出/异常穿出都会执行),
+            // 只是把"关闭"这一步换成了能在关闭前先补一次异步收尾的版本。
+            IDisposable implicitScope = inputSessions.BeginImplicitSession();
+            try
             {
-                JsonData entryResult = await ExecuteEntry(commands[i], i);
-                results.Add(entryResult);
-                if ((bool)entryResult["ok"]) { successCount++; } else { failureCount++; }
+                for (int i = 0; i < commands.Count; i++)
+                {
+                    JsonData entryResult = await ExecuteEntry(commands[i], i);
+                    results.Add(entryResult);
+                    if ((bool)entryResult["ok"]) { successCount++; } else { failureCount++; }
 
-                if (failFast && !(bool)entryResult["ok"]) { break; }
+                    if (failFast && !(bool)entryResult["ok"]) { break; }
+                }
+            }
+            finally
+            {
+                await inputSessions.EndImplicitSessionAsync(implicitScope);
             }
 
             return JsonRpcResponse.FromSuccess(request.Id, JsonRpcSerializer.Object(

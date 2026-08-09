@@ -405,7 +405,14 @@ namespace VeryFS.UnityMCP.Editor.Transport
             JsonData @params,
             CancellationToken cancellationToken)
         {
-            var completion = new TaskCompletionSource<JsonRpcResponse>();
+            // Completed by CompleteResponse on the receive loop's thread pool thread, so
+            // TrySetResult would otherwise run continuations inline on the thread that
+            // has to get back to reading. Defensive rather than load-bearing today: every
+            // current caller awaits from the main thread, so what runs inline is a Post
+            // back to it. A caller that ever awaits from the pool would run its own
+            // continuation on the receive thread instead.
+            var completion = new TaskCompletionSource<JsonRpcResponse>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
             lock (sync)
             {
                 pendingResponses.Add(id, completion);
@@ -698,9 +705,7 @@ namespace VeryFS.UnityMCP.Editor.Transport
 
         private static string SerializeResponse(JsonRpcResponse response)
         {
-            return response.Error == null
-                ? JsonRpcSerializer.SerializeSuccess(response.Id, response.Result)
-                : JsonRpcSerializer.SerializeError(response.Id, response.Error.Code, response.Error.Message, response.Error.Data);
+            return response.ToJson();
         }
     }
 }

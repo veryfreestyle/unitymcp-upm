@@ -67,5 +67,12 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         // domain reload 之后重挂回调。框架里那次运行还在跑, 没了的只是持有回调的旧对象 ——
         // 与 Execute 的唯一区别就是不再发起运行。
         void Resume(TestRunFilter filter, Action<TestProgress> onProgress, Action<TestRunOutcome> onFinished);
+
+        // 框架投递过终态、但身份判据判定"不是本对象在等的那次运行"因而整体丢弃的时刻。
+        // 回调注册在进程级单例上, 被丢弃的来路有两条: 别人的运行 (手工从 Test Runner 窗口
+        // 跑的), 以及 domain reload 把槽位冲掉、回调随旧对象一起没了的那次自己的运行。
+        // 后者正是运行标志会泄漏的场合 —— 有这个时间戳, 闸门就有"运行确实停了"的直接证据,
+        // 不必干等 StuckThresholdMs 的停滞推断。没有丢弃过则为 null。
+        DateTimeOffset? LastDiscardedFinishAt { get; }
     }
 }

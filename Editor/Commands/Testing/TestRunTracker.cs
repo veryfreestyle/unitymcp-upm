@@ -6,8 +6,12 @@ using VeryFS.UnityMCP.Editor.Protocol;
 
 namespace VeryFS.UnityMCP.Editor.Commands.Testing
 {
-    // 键值存储 seam。生产走 SessionState (抗 domain reload, Editor 关闭即清),
-    // 单测走内存字典 —— 避免测试互相污染真 SessionState。
+    // 键值存储 seam。生产走 SessionState, 单测走内存字典 —— 避免测试互相污染真 SessionState。
+    //
+    // SessionState 撑得过普通的 domain reload, 但**不是**所有 reload 都撑得过: 实测
+    // (2026-08-07) PlayMode 跑测中间那次 reload 会把这里的 key 整体清空, 而框架里的运行
+    // 好端端在跑。所以"标志还在不在"不能当作"运行还在不在"的判据 —— 真正抗 reload 的事实
+    // 是磁盘上的 pending 记录, 见 TestRunCommand.ResumeAfterReload 与 RestoreStarted。
     public interface ITestRunStateStore
     {
         string GetString(string key);
@@ -59,6 +63,23 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         // 一次回调都刷新, 才是"框架的运行还活着"的信号 —— TestRunCommand 拿它决定什么时候
         // 才敢放开 transport 闸门。
         public DateTimeOffset? LastProgressAt => ParseTime(store.GetString(KeyProgressAt));
+
+        /// <summary>
+        /// 按已知的起跑时刻重建"运行中"状态。用在 domain reload 之后认领一次仍在跑的运行:
+        /// SessionState 并不像原先假设的那样一定活过 reload —— PlayMode 跑测中间那次
+        /// reload 会把它整体清空 —— 而磁盘上的 pending 记录还在, 里面有真正的 StartedAt。
+        /// 不能改用 MarkStarted: 它按当前时间起算, 会把 30s init 超时窗口整个往后拉。
+        /// 进度快照不重建 (reload 前的进度已经没了), 让它当作"还没收到过回调"。
+        /// </summary>
+        public void RestoreStarted(string testMode, DateTimeOffset startedAt)
+        {
+            store.SetString(KeyRunning, "1");
+            store.SetString(KeyTestMode, testMode ?? "EditMode");
+            store.SetString(KeyStartedAt, startedAt.ToString("O"));
+            store.SetString(KeyCaseStartedAt, string.Empty);
+            store.SetString(KeyProgressAt, string.Empty);
+            store.SetString(KeyProgress, string.Empty);
+        }
 
         public void MarkStarted(string testMode)
         {

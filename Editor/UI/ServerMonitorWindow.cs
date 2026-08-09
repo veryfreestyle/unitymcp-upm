@@ -136,6 +136,12 @@ namespace VeryFS.UnityMCP.Editor.UI
             EditorGUILayout.Space();
             DrawMcpClients();
 
+            EditorGUILayout.Space();
+            DrawScreenshotDefaults();
+
+            EditorGUILayout.Space();
+            DrawFguiInputDefaults();
+
             if (!string.IsNullOrEmpty(lastActionMessage))
             {
                 EditorGUILayout.Space();
@@ -204,6 +210,70 @@ namespace VeryFS.UnityMCP.Editor.UI
             DrawClientConfigRow(snapshot, McpClientTargets.Claude, "Claude");
             DrawClientConfigRow(snapshot, McpClientTargets.Codex, "Codex");
             DrawClientConfigRow(snapshot, McpClientTargets.OpenCode, "OpenCode");
+        }
+
+        private void DrawScreenshotDefaults()
+        {
+            EditorGUILayout.LabelField("Screenshot", EditorStyles.boldLabel);
+
+            bool current = ScreenshotPreferences.LoadInlineImageDefault(projectRoot);
+            bool next = EditorGUILayout.ToggleLeft("Inline base64 image content", current);
+            if (next != current)
+            {
+                ScreenshotPreferences.SaveInlineImageDefault(projectRoot, next);
+                lastActionMessage = next
+                    ? "Screenshots will include the inline base64 image content by default."
+                    : "Screenshots will return only the file path by default.";
+                Repaint();
+            }
+
+            EditorGUILayout.LabelField(
+                "Default for screenshot calls that omit inlineImage; each call can override it.",
+                EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(
+                "Off returns only the file path, which uses far less of the agent's context.",
+                EditorStyles.miniLabel);
+        }
+
+        private void DrawFguiInputDefaults()
+        {
+            EditorGUILayout.LabelField("FairyGUI Input", EditorStyles.boldLabel);
+
+            float speed = FguiInputPreferences.LoadPointerSpeedBase(projectRoot);
+            float nextSpeed = EditorGUILayout.FloatField("Pointer speed base (px/s)", speed);
+            if (!Mathf.Approximately(nextSpeed, speed) && nextSpeed > 0f)
+            {
+                FguiInputPreferences.SavePointerSpeedBase(projectRoot, nextSpeed);
+                lastActionMessage = "Pointer speed base set to " + nextSpeed + " px/s.";
+                Repaint();
+            }
+
+            float wheel = FguiInputPreferences.LoadWheelScale(projectRoot);
+            float nextWheel = EditorGUILayout.FloatField("Wheel scale", wheel);
+            if (!Mathf.Approximately(nextWheel, wheel) && nextWheel > 0f)
+            {
+                FguiInputPreferences.SaveWheelScale(projectRoot, nextWheel);
+                lastActionMessage = "Wheel scale set to " + nextWheel + ".";
+                Repaint();
+            }
+
+            bool visualizer = FguiInputPreferences.LoadVisualizerEnabled(projectRoot);
+            bool nextVisualizer = EditorGUILayout.ToggleLeft("Input visualizer", visualizer);
+            if (nextVisualizer != visualizer)
+            {
+                FguiInputPreferences.SaveVisualizerEnabled(projectRoot, nextVisualizer);
+                lastActionMessage = nextVisualizer
+                    ? "Injected pointer/touch markers will be drawn in the Game View."
+                    : "Injected pointer/touch markers will not be drawn.";
+                Repaint();
+            }
+
+            EditorGUILayout.LabelField(
+                "speedScale: 1 means this many pixels per second. Raise it on high-resolution projects.",
+                EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(
+                "Wheel scale compensates platforms where the device pixel ratio guess is wrong.",
+                EditorStyles.miniLabel);
         }
 
         private static void DrawMcpConfigHeader()

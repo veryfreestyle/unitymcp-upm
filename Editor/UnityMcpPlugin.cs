@@ -137,7 +137,8 @@ namespace VeryFS.UnityMCP.Editor
             registry.Register(new ScreenshotGameViewCommand(
                 new UnityGameViewCapturer(gameViewEnvironment),
                 Path.Combine(projectRoot, "Temp", "UnityMCP", "screenshots"),
-                new UlidLikeIdGenerator()));
+                new UlidLikeIdGenerator(),
+                projectRoot));
             var panelSource = new FairyGUIPanelSource();
             var stageInput = new UnityStageInput();
             var frameStepper = new UniTaskFrameStepper();
@@ -164,17 +165,33 @@ namespace VeryFS.UnityMCP.Editor
             registry.Register(new FairyGUIScrollCommand(panelSource));
             registry.Register(new FairyGUITransitionCommand(panelSource));
             registry.Register(new FairyGUIFocusCommand(panelSource));
+            var stageInputProbe = new McpStageInputProbe();
+            bool hasStageInput = stageInputProbe.TryBind(out _, out _);
             registry.RegisterGroup(new RpcGroupDefinition
             {
                 Group = RpcMethods.FairyGuiInputGroup, ToolName = "fgui-input",
                 Title = "FairyGUI / Input",
-                Description = "Drive FairyGUI objects through the real input pipeline (async, cross-frame). " +
-                    "action: click | double-click | hover | gesture. Play mode only."
+                Description = FguiInputRegistration.DescriptionFor(hasStageInput
+                    ? FguiInputRegistration.StageInputActions
+                    : FguiInputRegistration.LegacyActions),
+                DefaultTimeoutMs = FguiInputRegistration.TimeoutMs
             });
-            registry.Register(new FairyGUIClickCommand(panelSource, stageInput, frameStepper));
-            registry.Register(new FairyGUIDoubleClickCommand(panelSource, stageInput, frameStepper));
-            registry.Register(new FairyGUIGestureCommand(panelSource, stageInput, frameStepper));
-            registry.Register(new FairyGUIHoverCommand(panelSource, stageInput, frameStepper));
+            McpStageInputSessionManager inputSessions = FguiInputRegistration.RegisterCommands(
+                registry, stageInputProbe, panelSource, stageInput, frameStepper, projectRoot);
+
+            // 退出 Play 时 fork 侧的宿主 GameObject 被销毁、Run 的回调不会触发,
+            // 不兜的话 UniTaskCompletionSource 会一直挂着 (P22.1 §6 记为已知限制,
+            // 明说由消费方兜底)。domain reload 不用管: 静态状态本来就一起丢。
+            if (inputSessions != null)
+            {
+                EditorApplication.playModeStateChanged += change =>
+                {
+                    if (change == PlayModeStateChange.ExitingPlayMode)
+                    {
+                        inputSessions.ForceRelease("play mode exited");
+                    }
+                };
+            }
             var sceneGateway = new UnitySceneGateway();
             registry.RegisterGroup(new RpcGroupDefinition
             {
@@ -220,8 +237,8 @@ namespace VeryFS.UnityMCP.Editor
             {
                 UnityEngine.Debug.LogWarning("Unity MCP: asset wiring failed. " + ex.Message);
             }
-            registry.Register(new BatchExecuteCommand(
-                registry, new UniTaskFrameStepper(), new UniTaskDelayProvider()));
+            registry.Register(new BatchExecuteCommand(registry, new UniTaskFrameStepper(), new UniTaskDelayProvider(),
+                (IMcpImplicitSessionHost)inputSessions ?? new McpNullImplicitSessionHost()));
             int port = ProjectPortCalculator.GetPort(projectRoot);
             ServerTokens tokens = TokenStore.GetOrCreate();
             int editorPid = System.Diagnostics.Process.GetCurrentProcess().Id;
@@ -323,6 +340,11 @@ namespace VeryFS.UnityMCP.Editor
             // comment above for the full explanation and measurement.
             productionLoop?.Dispose();
         }
+
+        // 只读暴露给测试断言顶层工具数量(Global Constraint「不新增顶层 tool, 仍是 17 个」
+        // review Minor: 之前只靠人工数, 没有测试守住)。不是新的装配入口 —— 跟 StartForTests
+        // 一样, 复用 [InitializeOnLoad] 已经跑完的那份 registry, 不重新触发一次装配。
+        internal static RpcCommandRegistry Registry => registry;
 
         internal static RpcConnectionLoop StartForTests(string url)
         {

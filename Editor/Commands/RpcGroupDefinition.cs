@@ -12,6 +12,7 @@ namespace VeryFS.UnityMCP.Editor.Commands
         public string Description { get; set; }
         public string Completion { get; set; } = "response";
         public string FailureMode { get; set; } = "error";
+        public int DefaultTimeoutMs { get; set; }
         public JsonData Annotations { get; set; }
     }
 }

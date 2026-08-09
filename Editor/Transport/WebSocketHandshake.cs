@@ -27,7 +27,37 @@ namespace VeryFS.UnityMCP.Editor.Transport
         // RFC 6455 section 1.3.
         private const string AcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         private const int MaxResponseHeaderBytes = 16 * 1024;
-        private const int ReceiveBufferSize = 8192;
+
+        // Caps how much payload a single WebSocket.ReceiveAsync can hand back, and so
+        // how many times reading one message goes round RpcWebSocketClient's loop.
+        //
+        // That count used to dominate everything. While the loop resumed on Unity's
+        // synchronization context each iteration waited for an Editor tick, so an 8 MiB
+        // message cost 1024 of them: 61.0 s at 8 KiB against 3.50 s at 128 KiB
+        // (2022.3.62f3, Client_RejectsOversizedServerMessage). The loop now runs on the
+        // thread pool, where an iteration costs microseconds rather than ~51 ms, and the
+        // same test finishes in 0.19 s — so this value went back to being an ordinary
+        // buffer-size trade-off rather than a latency lever.
+        //
+        // 32 KiB keeps a few large reads instead of hundreds of small ones without
+        // holding much: the allocation is resident for the life of the connection, twice
+        // over, since RpcWebSocketClient's own buffer has to match. Production messages
+        // inbound are small anyway — the large payloads go the other way through
+        // SendAsync, which awaits once per message whatever its size.
+        //
+        // No framework ceiling constrains this. The 64 KiB limit documented for .NET
+        // Framework lives in WebSocketHelpers, part of the native WSPC path; Unity's Mono
+        // ships the managed CoreFX ManagedWebSocket instead, whose only check is a lower
+        // bound (verified in the net_4_x-macos and net_4_x-win32 System.dll of both
+        // 2021.3.45f2c1 and 2022.3.62f3).
+        //
+        // Internal rather than private because RpcWebSocketClient's buffer must match it:
+        // a smaller one there would bound the read instead, a larger one never fill.
+        internal const int ReceiveBufferSize = 32 * 1024;
+
+        // Left at 8 KiB on purpose. The send path awaits once per message no matter how
+        // large it is, so there is no tick cost to cut here, and changing this would
+        // change how outbound messages are fragmented on the wire for no gain.
         private const int SendBufferSize = 8192;
 
         /// <param name="secWebSocketKey">

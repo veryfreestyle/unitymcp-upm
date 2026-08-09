@@ -65,7 +65,16 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
         public IUINode GetGRoot()
         {
             var inst = GRootInstField?.GetValue(null) as GRoot;
-            return inst == null ? null : new GObjectNodeAdapter(inst);
+            return IsLive(inst) ? new GObjectNodeAdapter(inst) : null;
+        }
+
+        // GRoot._inst 退出 play 之后并不会变 null: GRoot 是 GComponent, 普通 C# 对象, 只有它
+        // 挂的 GameObject 被销毁了。光判 inst == null 会把这份残骸当成活的 UI 树交出去 ——
+        // 调用方(fgui-query 等)拿到的每个节点都指向已销毁对象。判到 gameObject 这一层才算数,
+        // 那才是 UnityEngine.Object, 销毁后 == null 成立。
+        private static bool IsLive(GRoot inst)
+        {
+            return inst != null && inst.displayObject != null && inst.displayObject.gameObject != null;
         }
     }
 }

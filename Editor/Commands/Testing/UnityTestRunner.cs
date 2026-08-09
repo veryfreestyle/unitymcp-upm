@@ -30,6 +30,9 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         // 记下本轮是不是 PlayMode, RunFinished 汇报 domainReloadDisabled 时按这个裁剪,
         // 避免同一会话里遗留的 PlayMode Restore 标记把下一次 EditMode 结果也带脏。
         private bool isPlayModeRun;
+        // 本轮的过滤条件。RunStarted 数叶子时要用它筛一遍: 认领路径 (domain reload 之后)
+        // 框架给的是整棵树, 不筛的话进度分母会把没选中的测试也算进去。
+        private TestRunFilter activeFilter;
         // 回调注册在 [InitializeOnLoad] 单例上, 是进程级的: 用户从 Test Runner 窗口手工跑的
         // 运行、以及被上层放弃 (wall-clock 上限触发 request_timeout, 进度停滞后放开 gate) 但
         // 框架里还活着的旧运行, 回调都会打到这个对象上 —— TestRunnerApi 没有 Cancel, 放弃 ≠ 停止。
@@ -54,6 +57,15 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
         // 静默丢弃看起来就像"这条测试没跑" —— 每轮吼一次 (只第一次, 别把 Console 刷爆),
         // 既能在真重叠时留下痕迹, 也是"清单判据有没有误伤自己人"的唯一可观测信号。
         private bool foreignLeafReported;
+
+        // 见 ITestRunner.LastDiscardedFinishAt。丢弃终态时置位, 给闸门一个"框架里那次运行
+        // 确实已经结束"的直接证据。
+        private DateTimeOffset? lastDiscardedFinishAt;
+
+        // 静默丢弃终态跟静默丢弃叶子一样看不出痕迹, 而它牵连的是闸门 —— 每轮吼一次。
+        private bool discardedFinishReported;
+
+        public DateTimeOffset? LastDiscardedFinishAt => lastDiscardedFinishAt;
 
         private bool Bound => currentRunId != 0 && observedRunId == currentRunId;
 
@@ -125,10 +137,15 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             expectedLeafNames.Clear();
             leafNamesTrusted = false;
             foreignLeafReported = false;
+            discardedFinishReported = false;
+            // 时间戳不清: 上一轮丢弃的那笔账对本轮闸门没有意义, 但闸门自己会拿它跟
+            // tracker.StartedAt 比时间, 旧账天然出局 —— 这里清反而会丢掉 reload 之前
+            // 那次丢弃的记录 (跨 reload 的对象是新的, 本来也就只剩这一份线索)。
 
             domainReloadDisabled = false;
             resumedAcrossReload = false;
             isPlayModeRun = ParseMode(filter.TestMode) == TestMode.PlayMode;
+            activeFilter = filter;
         }
 
         public void RunStarted(ITestAdaptor testsToRun)
@@ -152,7 +169,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             leafNamesTrusted = false;
             foreignLeafReported = false;
             totalTests = 0;
-            CollectLeaves(testsToRun, expectedLeafNames, ref totalTests);
+            CollectLeaves(testsToRun, activeFilter, expectedLeafNames, ref totalTests);
             EmitProgress();
         }
 
@@ -162,6 +179,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             // 别把它的结果当成这次请求的结果上报, 也别碰下面的 Restore/onFinished。
             if (!Bound)
             {
+                NoteDiscardedFinish("callback stream not bound to this request");
                 return;
             }
 
@@ -169,6 +187,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             // (被放弃后才收尾, 或手工跑的那次) 在收尾, 它的 summary 不是本轮的账。
             if (leafNamesTrusted && result != null && !OverlapsExpectedLeaves(result.Test))
             {
+                NoteDiscardedFinish("result tree does not overlap this request's leaves");
                 return;
             }
 
@@ -219,6 +238,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             // Execute() 还有一个终态回调没交付 (不管 RunStarted 是否跑过), 这次错误就该我接。
             if (onFinished == null)
             {
+                NoteDiscardedFinish("no request is waiting for a terminal outcome");
                 return;
             }
 
@@ -283,6 +303,24 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
             onFinished = null;
             onProgress = null;
             callback?.Invoke(outcome);
+        }
+
+        // 记下"框架投递了终态、但这笔账不是本对象在等的那次运行的"。两个用处:
+        //   1. TestRunCommand 的闸门拿它当"框架里那次运行确实停了"的直接证据 (见
+        //      ITestRunner.LastDiscardedFinishAt) —— 尤其是 domain reload 把槽位冲掉、
+        //      回调随旧对象一起没了的那次, 否则只能靠 StuckThresholdMs 的停滞推断干等;
+        //   2. 静默丢弃终态看起来就像"运行没结束", 留一条日志才有得查。每轮只吼一次,
+        //      理由同 foreignLeafReported: 别把 Console 刷爆。
+        private void NoteDiscardedFinish(string reason)
+        {
+            lastDiscardedFinishAt = DateTimeOffset.UtcNow;
+            if (discardedFinishReported)
+            {
+                return;
+            }
+
+            discardedFinishReported = true;
+            Debug.Log("Unity MCP: discarded a test run terminal callback — " + reason + ".");
         }
 
         // RunFinished 和 OnError 都要处理"这轮是否还欠一次 Restore", 抽成一个方法防止
@@ -431,7 +469,8 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
 
         // 一趟走完既数叶子 (totalTests) 又记全名 (身份判据)。计数不用集合的 Count ——
         // 万一两条叶子全名撞了, 进度分母也不该少一个。
-        private static void CollectLeaves(ITestAdaptor node, HashSet<string> names, ref int count)
+        private static void CollectLeaves(
+            ITestAdaptor node, TestRunFilter filter, HashSet<string> names, ref int count)
         {
             if (node == null)
             {
@@ -440,6 +479,17 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
 
             if (!node.HasChildren)
             {
+                // 认领路径下框架给的是整棵树 (实测: PlayMode 全量 RunStarted 报 55 个叶子,
+                // 其中 3 个属于没选中的 DemoAcceptance, 而实际只跑 52 个)。不按本轮 filter
+                // 筛一遍, 进度分母就永远比 completed 大, 看着像"卡在最后几个用例上"。
+                // 复用预检那两个判据, 两处口径必须一致。
+                if (filter != null &&
+                    (!MatchesAssembly(node, filter.AssemblyNames) ||
+                     !MatchesGroup(node.FullName ?? node.Name, filter.GroupNames)))
+                {
+                    return;
+                }
+
                 count++;
                 string fullName = node.FullName ?? node.Name;
                 if (!string.IsNullOrEmpty(fullName))
@@ -452,7 +502,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.Testing
 
             foreach (var child in node.Children)
             {
-                CollectLeaves(child, names, ref count);
+                CollectLeaves(child, filter, names, ref count);
             }
         }
 

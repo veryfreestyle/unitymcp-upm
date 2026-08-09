@@ -16,7 +16,13 @@ namespace VeryFS.UnityMCP.Editor.Commands
         private readonly Dictionary<string, List<IGroupedCommand>> groupMembers =
             new Dictionary<string, List<IGroupedCommand>>();
 
-        private bool built;
+        // 注册期只有主线程碰这些集合, 但 TryGet 现在会被接收循环从线程池线程调用
+        // (RpcWebSocketClient.ReceiveLoopAsync 跑在 Task.Run 上), 而 TryGet 会触发
+        // 这个惰性 build。volatile 写在 build 末尾、volatile 读在开头, 两者配对才能
+        // 保证后来的读线程看到已填好的 byMethod/descriptors; 普通 bool 在 ARM64 上
+        // 没有这个保证。buildLock 则保证 build 本身不会被并发执行两次。
+        private volatile bool built;
+        private readonly object buildLock = new object();
 
         public void RegisterGroup(RpcGroupDefinition def)
         {
@@ -90,6 +96,15 @@ namespace VeryFS.UnityMCP.Editor.Commands
         {
             if (built) { return; }
 
+            lock (buildLock)
+            {
+                if (built) { return; }
+                Build();
+            }
+        }
+
+        private void Build()
+        {
             // 子命令引用了未定义的组 -> 报错。
             foreach (var kv in groupMembers)
             {

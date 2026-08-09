@@ -23,6 +23,12 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
             RpcMethod = RpcMethods.FairyGuiCallEvent,
             Title = "FairyGUI / Call Event",
             Description = "Dispatch a FairyGUI EventListener (default onClick) on a located GObject via Call(). " +
+                "This bypasses the input pipeline: no hit test, and the control's own state machine never runs — " +
+                "dispatching onClick on a checkbox fires the handler but leaves selected unchanged. Prefer a real " +
+                "fgui-input action whenever one exists for what you are doing; reach for this for events with no " +
+                "pointer equivalent (onChanged, onSubmit, a bare onRollOver/onRollOut), for targets the pointer " +
+                "cannot reach, or to set up state before the interaction you are actually testing. " +
+                "hadListener:false in the response means nothing was listening. " +
                 "onClick/onRightClick/onTouchBegin/onTouchEnd/onRollOver/onRollOut work on any GObject. " +
                 "onChanged needs GButton/GComboBox/GTextInput, onSubmit needs GTextInput; other types return " +
                 "unsupported, as does an event name outside this set. Play mode only.",

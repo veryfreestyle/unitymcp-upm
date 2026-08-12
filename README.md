@@ -14,7 +14,15 @@
 ## Installation
 
 <!-- upm-install:begin -->
-Add the following to your project's `Packages/manifest.json`:
+用 Package Manager 装：`Window > Package Manager` → 左上角 `+` → `Add package from git URL...`，粘贴
+
+```
+https://github.com/veryfreestyle/unitymcp-upm.git
+```
+
+下面 manifest 里的 FairyGUI / LitJson / UniTask 三个依赖用同一个入口各加一次，先加它们再加 unitymcp。
+
+或者直接编辑 `Packages/manifest.json`，一次写完（与上面等价）：
 
 ```json
 {

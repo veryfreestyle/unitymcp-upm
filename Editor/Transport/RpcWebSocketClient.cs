@@ -35,10 +35,11 @@ namespace VeryFS.UnityMCP.Editor.Transport
         // The socket of an attempt that is still being established. Without it the only
         // reference to that socket is ConnectAsync's local, so Dispose() and Abort() see
         // a null tcpClient and close nothing, leaving the close entirely to ConnectAsync's
-        // own timeout branch — which resumes through the Editor's synchronization context.
-        // Nothing pumps that context after beforeAssemblyReload's Dispose() returns, so a
-        // connect in flight across a domain reload would keep its ESTABLISHED connection
-        // until the TcpClient finalizer ran at domain teardown.
+        // own timeout branch. That branch is up to connectTimeoutMs away and its caller is
+        // torn down long before then: Dispose() runs synchronously from
+        // beforeAssemblyReload, so a connect in flight across a domain reload would hold an
+        // ESTABLISHED connection the peer still sees, for as long as it took the CLR to get
+        // around to the TcpClient finalizer.
         private TcpClient connectingTcpClient;
         private CancellationTokenSource receiveCancellation;
         private Task receiveTask;
@@ -219,6 +220,14 @@ namespace VeryFS.UnityMCP.Editor.Transport
             return SendAsync(json, CancellationToken.None);
         }
 
+        // Context-free on purpose, unlike everything else that is reached from the main
+        // thread. This method touches no Unity API — a semaphore and a socket write — yet
+        // command responses are sent from a dispatcher callback, i.e. on the main thread,
+        // so without ConfigureAwait its continuations resume through whatever
+        // SynchronizationContext the Editor's main thread carries. The continuation that
+        // matters is the finally below: a project that swaps Unity's context out for one
+        // Unity never pumps would orphan sendLock.Release(), and a send lock that is never
+        // released wedges every later send on the connection, not just this one.
         public async Task SendAsync(string json, CancellationToken cancellationToken)
         {
             if (json == null)
@@ -226,7 +235,7 @@ namespace VeryFS.UnityMCP.Editor.Transport
                 throw new ArgumentNullException(nameof(json));
             }
 
-            await sendLock.WaitAsync(cancellationToken);
+            await sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             WebSocket socket = null;
             try
             {
@@ -241,7 +250,8 @@ namespace VeryFS.UnityMCP.Editor.Transport
                 }
 
                 var bytes = Encoding.UTF8.GetBytes(json);
-                await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, cancellationToken);
+                await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (Exception ex)
             {

@@ -41,6 +41,7 @@ FairyGUI 的界面元素是独立的 GObject 树，不挂 GameObject，通用 Ga
 
 ## Installation
 
+<!-- upm-install:begin -->
 Add the following to your project's `Packages/manifest.json`:
 
 ```json
@@ -53,6 +54,24 @@ Add the following to your project's `Packages/manifest.json`:
   }
 }
 ```
+
+已经自带 FairyGUI / LitJson（内嵌源码或自己的 UPM 包）的工程用 `hetao-scratch` 分支：上面那两个依赖会
+和工程内已有的实现撞出重复程序集与 CS0433，该分支去掉了它们并配好 asmdef 引用。安装方式见该分支的 README。
+<!-- upm-install:end -->
+
+### 别用 GitHub 的 Download ZIP 装
+
+`Editor/Server~/` 下的两个 server 二进制（macOS arm64 / Windows x64）在本仓库走 **git-lfs**。GitHub 的
+「Download ZIP」和 source tarball 不会还原 lfs 内容，只会给你约 130 字节的 lfs 指针文本文件，文件名对、
+内容不对。那样装进项目后 server 根本起不来，症状是 MCP 一直连不上而 Console 只报一个含糊的启动失败。
+
+要拿到真的二进制，用下面任一种：
+
+- **UPM git URL**（上面那段 manifest 的写法）—— Unity 会真的 `git clone`，lfs 内容正常拉取。
+- **`git clone`** 本仓库后把目录放进项目的 `Packages/`。
+
+两种都要求本机装了 **git-lfs** 并在 PATH 里（`git lfs version` 能出版本号）。没装的话 clone 出来的
+同样是指针文件。装完可以补拉：`git lfs pull`。
 
 ## 配置 MCP 客户端
 

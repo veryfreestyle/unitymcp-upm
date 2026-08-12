@@ -45,6 +45,16 @@ namespace VeryFS.UnityMCP.Editor.Transport
         private readonly Dictionary<string, TaskCompletionSource<JsonRpcResponse>> pendingResponses =
             new Dictionary<string, TaskCompletionSource<JsonRpcResponse>>();
         private readonly HashSet<string> reportRequestIds = new HashSet<string>();
+
+        // Built once on the main thread in the constructor because the supervision loop
+        // that sends it runs on the thread pool, and two of its values (Application's
+        // dataPath and unityVersion) are main-thread-only Editor APIs. Deliberately not
+        // marshalled back through the dispatcher like the heartbeat's state is: register
+        // is the message that decides whether we are connected at all, so it must not
+        // queue behind whatever the main thread is doing. Every field in it is stable for
+        // the life of the process — the server's handleRegister identifies a reconnecting
+        // session by exactly this editorSessionId.
+        private readonly JsonData registrationParams;
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private TaskCompletionSource<object> connectionReady = new TaskCompletionSource<object>();
         private readonly TaskCompletionSource<object> initialConnection = new TaskCompletionSource<object>();
@@ -57,6 +67,12 @@ namespace VeryFS.UnityMCP.Editor.Transport
 
         // Called before each connection attempt; returning false stops the supervision loop.
         // Null means no-op (always continue).
+        //
+        // Runs on the main thread, reached through the dispatcher: the production
+        // implementation probes and may spawn the server, and on its way through
+        // ServerLauncher it reads EditorPrefs and writes SessionState — neither of which
+        // may be touched off the main thread, and both of which sit on the path taken
+        // every time the server is already alive.
         private readonly Func<bool> ensureServerAlive;
 
         // Returns true while a Unity test run owns the Editor. Null means no-op
@@ -84,6 +100,12 @@ namespace VeryFS.UnityMCP.Editor.Transport
             this.ownsDispatcher = ownsDispatcher;
             this.editorSession = editorSession ?? throw new ArgumentNullException(nameof(editorSession));
             this.idGenerator = idGenerator ?? throw new ArgumentNullException(nameof(idGenerator));
+
+            // Freezes the registry here, one construction earlier than the first inbound
+            // request used to. Every assembly point registers its commands before
+            // constructing the loop, and one that ever stops doing so gets a loud
+            // "already built" from the registry rather than a silent omission.
+            registrationParams = BuildRegistrationParams();
             client.MessageReceived += OnMessageReceived;
             client.ConnectionClosed += OnConnectionClosed;
         }
@@ -96,8 +118,33 @@ namespace VeryFS.UnityMCP.Editor.Transport
             }
 
             started = true;
-            supervisorTask = SuperviseConnectionAsync(cancellation.Token);
-            reportTask = ReportLoopAsync(cancellation.Token);
+
+            // Both loops run off the Editor's synchronization context, and for a harsher
+            // reason than the receive loop's tick cost. A project that installs its own
+            // SynchronizationContext on the main thread (a UniTask-like framework doing
+            // SetSynchronizationContext in its own bootstrap, for instance) orphans every
+            // continuation already queued on Unity's: UnitySynchronizationContext.ExecuteTasks
+            // starts with `Current as UnitySynchronizationContext` and returns immediately
+            // when that is null, so the queue the connect continuation is sitting in is
+            // never drained again for the life of the domain. Measured against a project
+            // like that: entering play mode reconnected the socket but never sent register,
+            // and /health reported unityConnected:false until the next domain reload.
+            //
+            // On the pool there is no ambient context to capture, so nothing in these two
+            // loops depends on which SynchronizationContext the main thread happens to have.
+            // What genuinely needs the main thread goes through EditorMainThreadDispatcher,
+            // which is driven by EditorApplication.update and does not care either.
+            //
+            // The token is read here rather than inside the lambdas on purpose. Inside, the
+            // read would happen on a pool thread at an unknown later moment, and
+            // CancellationTokenSource.Token throws once Dispose has run — so a loop started
+            // and torn down in the same frame (StartAsync followed by a domain reload) would
+            // fault its task with an ObjectDisposedException nobody observes. Read on this
+            // thread it cannot race Dispose, which runs on this thread too, and the struct
+            // the lambdas capture keeps reporting cancellation after the source is gone.
+            var cancellationToken = cancellation.Token;
+            supervisorTask = Task.Run(() => SuperviseConnectionAsync(cancellationToken));
+            reportTask = Task.Run(() => ReportLoopAsync(cancellationToken));
             await initialConnection.Task;
         }
 
@@ -108,6 +155,18 @@ namespace VeryFS.UnityMCP.Editor.Transport
                 return;
             }
 
+            // Returns without waiting for supervisorTask or reportTask, deliberately
+            // unlike RpcWebSocketClient.Dispose which does give its receive loop a bounded
+            // moment to unwind. The receive loop needs that because it fans messages out to
+            // subscribers, and a call already in flight keeps dispatching commands into an
+            // Editor being torn down. These two loops fan out to nothing: Cancel() below
+            // makes every exception they can still raise land in their
+            // `when (cancellationToken.IsCancellationRequested)` filters and end the loop
+            // quietly. Waiting would also invert a dependency — a supervisor parked on
+            // dispatcher.Enqueue is waiting for the main thread's Drain, which is the very
+            // thread that would be doing the waiting, so the whole bounded wait would be
+            // burned on every reload that hits that window. What actually stops them is
+            // this cancellation plus the socket the client closes below.
             disposed = true;
             cancellation.Cancel();
             FailPendingResponses(new OperationCanceledException("The RPC connection loop was disposed."));
@@ -131,7 +190,7 @@ namespace VeryFS.UnityMCP.Editor.Transport
             {
                 try
                 {
-                    if (ensureServerAlive != null && !ensureServerAlive())
+                    if (!await ShouldKeepConnectingAsync())
                     {
                         break;
                     }
@@ -140,7 +199,7 @@ namespace VeryFS.UnityMCP.Editor.Transport
                     var registration = await SendRequestCoreAsync(
                         idGenerator.NewId("unity"),
                         RpcMethods.UnityRegister,
-                        BuildRegistrationParams(),
+                        registrationParams,
                         cancellationToken);
                     var heartbeatIntervalMs = ReadHeartbeatInterval(registration);
                     await RecoverPendingRequestsAsync();
@@ -215,6 +274,24 @@ namespace VeryFS.UnityMCP.Editor.Transport
                     break;
                 }
             }
+        }
+
+        // The gate itself belongs on the main thread — see the ensureServerAlive field for
+        // which Editor APIs it reaches — so the loop hops there for it rather than calling
+        // it inline on the pool. This does not put back the dependency StartAsync's
+        // Task.Run removed: the dispatcher is a ConcurrentQueue drained from
+        // EditorApplication.update, so it works whatever SynchronizationContext the main
+        // thread carries.
+        private async Task<bool> ShouldKeepConnectingAsync()
+        {
+            if (ensureServerAlive == null)
+            {
+                return true;
+            }
+
+            var keepConnecting = true;
+            await dispatcher.Enqueue(() => keepConnecting = ensureServerAlive());
+            return keepConnecting;
         }
 
         // Exponential backoff capped at MaxReconnectDelayMs. A successful
@@ -296,6 +373,16 @@ namespace VeryFS.UnityMCP.Editor.Transport
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+            }
+            catch (Exception) when (cancellationToken.IsCancellationRequested)
+            {
+                // Teardown, not a failure. Running on the pool, this loop can now be midway
+                // through LoadTerminalReportsAsync when Dispose disposes the dispatcher, and
+                // the ObjectDisposedException that comes back is not an OperationCanceled.
+                // Left to escape it would fault reportTask, which nobody awaits, and resurface
+                // at GC time as an unobserved task exception in whatever ran next.
+                // (IsCancellationRequested stays readable after the source is disposed; only
+                // Token and Register throw there.)
             }
         }
 
@@ -420,7 +507,8 @@ namespace VeryFS.UnityMCP.Editor.Transport
 
             try
             {
-                await client.SendAsync(JsonRpcSerializer.SerializeRequest(id, method, @params), cancellationToken);
+                await client.SendAsync(JsonRpcSerializer.SerializeRequest(id, method, @params), cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -487,7 +575,8 @@ namespace VeryFS.UnityMCP.Editor.Transport
             var errorCode = exception.ErrorCode == JsonRpcErrorCodes.ParseError ? "parse_error" : "invalid_request";
             try
             {
-                await client.SendAsync(JsonRpcSerializer.SerializeError(id, exception.ErrorCode, exception.Message, errorCode, null));
+                await client.SendAsync(JsonRpcSerializer.SerializeError(id, exception.ErrorCode, exception.Message, errorCode, null))
+                    .ConfigureAwait(false);
             }
             catch (Exception sendException)
             {
@@ -547,12 +636,18 @@ namespace VeryFS.UnityMCP.Editor.Transport
             });
         }
 
+        // The four awaits of client.SendAsync in this class all use ConfigureAwait(false),
+        // and the rule is worth stating as one thing rather than four: no continuation of a
+        // send in this class needs the main thread. Each either only touches fields and
+        // locks, or already hops back explicitly through the dispatcher (ExecuteAccepted
+        // below). Stated per-call-site it would be unauditable, and an audit is the point —
+        // the failure mode of a missed one is silent.
         private async Task SendAcceptanceAndScheduleExecutionAsync(
             string requestId, JsonRpcResponse response, ILongRunningCommand command)
         {
             try
             {
-                await client.SendAsync(SerializeResponse(response));
+                await client.SendAsync(SerializeResponse(response)).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -570,7 +665,7 @@ namespace VeryFS.UnityMCP.Editor.Transport
         {
             try
             {
-                await client.SendAsync(SerializeResponse(response));
+                await client.SendAsync(SerializeResponse(response)).ConfigureAwait(false);
             }
             catch (Exception exception)
             {

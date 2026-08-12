@@ -14,7 +14,8 @@
 ## Installation
 
 <!-- upm-install:begin -->
-本分支给「工程自带 FairyGUI / LitJson」的宿主用。相对 `main` 只差三处，见下方"与 main 的差异"。
+本分支给「工程自带 FairyGUI / LitJson」的宿主用：`main` 会把 FairyGUI / LitJson 两个 UPM 依赖拉进来，
+跟工程里已有的实现撞出重复程序集和 `CS0433`，本分支去掉了它们并把 asmdef 与依赖声明配好。
 
 用 Package Manager 装：`Window > Package Manager` → 左上角 `+` → `Add package from git URL...`，粘贴
 
@@ -35,19 +36,12 @@ https://github.com/veryfreestyle/unitymcp-upm.git#hetao-scratch
 }
 ```
 
-### 与 main 的差异
-
-| 文件 | 差异 | 原因 |
-|---|---|---|
-| `Editor/Commands/FairyGUI/Input/FguiInputWheelCommand.cs` | `Stage.mouseWheelScale` → `1f` | FairyGUI 4.3.0 的 `Stage` 没有 `mouseWheelScale`（只有 `devicePixelRatio`），它的事件链里滚轮不经过这层缩放。传 `1f` 即跳过该层，行为与 4.3.0 一致 |
-| `Editor/VeryFS.UnityMCP.Editor.asmdef` | 引用 `LitJson` → `VeryFS.Utilities` | 宿主的 `VeryFS.Utilities` 已内嵌同命名空间同类名的 LitJson。源码里的 `using LitJson;` 不用改，命名空间不变，只是程序集来源换了 |
-| `package.json` | 依赖改成宿主侧的四个提供方包（见上表） | 去掉会拉进重复实现的两个；补上 `com.unity.test-framework` 等 —— asmdef 引用了 `UnityEditor.TestRunner` 却没声明它的提供方包，作为包时解析不到 |
-
 FairyGUI 输入注入（`fgui-input` 的键盘 / 文本 / 滚轮 / 手势序列）依赖 fork 版 FairyGUI 的
 `IStageInputSource` 等 API。装配期按反射探测：探不到就自动降级成 `click` / `double-click` / `gesture` /
 `hover` 四个 action，并在 Console 打一条 compatibility mode warning 写明缺哪个成员。4.3.0 属于降级路径。
 
-> 本分支由主仓的 `sync-unitymcp-upm.sh` 每次同步时自动生成：内容 = `main` 的内容 + 上表三处变换。
+> 本分支由主仓的 `sync-unitymcp-upm.sh` 每次同步时自动生成：内容 = `main` 的内容 + 三处兼容性变换
+> （`FguiInputWheelCommand.cs`、`VeryFS.UnityMCP.Editor.asmdef`、`package.json`）。
 > **不要直接在本分支上手改这三个文件**，下次同步会被覆盖；要改请改主仓或改脚本里的变换。
 <!-- upm-install:end -->
 

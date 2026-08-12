@@ -16,7 +16,15 @@
 <!-- upm-install:begin -->
 本分支给「工程自带 FairyGUI / LitJson」的宿主用。相对 `main` 只差三处，见下方"与 main 的差异"。
 
-Add the following to your project's `Packages/manifest.json`:
+用 Package Manager 装：`Window > Package Manager` → 左上角 `+` → `Add package from git URL...`，粘贴
+
+```
+https://github.com/veryfreestyle/unitymcp-upm.git#hetao-scratch
+```
+
+`#hetao-scratch` 不能省，省掉就是 `main` 分支，会把 FairyGUI / LitJson 两个依赖拉进来跟工程里已有的撞车。
+
+或者直接编辑 `Packages/manifest.json`（与上面等价）：
 
 ```json
 {

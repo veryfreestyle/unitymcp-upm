@@ -35,14 +35,6 @@ https://github.com/veryfreestyle/unitymcp-upm.git#hetao-scratch
   }
 }
 ```
-
-FairyGUI 输入注入（`fgui-input` 的键盘 / 文本 / 滚轮 / 手势序列）依赖 fork 版 FairyGUI 的
-`IStageInputSource` 等 API。装配期按反射探测：探不到就自动降级成 `click` / `double-click` / `gesture` /
-`hover` 四个 action，并在 Console 打一条 compatibility mode warning 写明缺哪个成员。4.3.0 属于降级路径。
-
-> 本分支由主仓的 `sync-unitymcp-upm.sh` 每次同步时自动生成：内容 = `main` 的内容 + 三处兼容性变换
-> （`FguiInputWheelCommand.cs`、`VeryFS.UnityMCP.Editor.asmdef`、`package.json`）。
-> **不要直接在本分支上手改这三个文件**，下次同步会被覆盖；要改请改主仓或改脚本里的变换。
 <!-- upm-install:end -->
 
 ### 别用 GitHub 的 Download ZIP 装

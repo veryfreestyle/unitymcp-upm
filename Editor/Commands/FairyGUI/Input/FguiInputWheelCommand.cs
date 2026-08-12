@@ -108,7 +108,7 @@ namespace VeryFS.UnityMCP.Editor.Commands.FairyGUI
 
                     IEnumerator move = BuildMoveSegment(lease.Player, plan);
                     float eventDelta = EventDeltaFor(delta.Value,
-                        Stage.devicePixelRatio, Stage.mouseWheelScale, WheelScale);
+                        Stage.devicePixelRatio, 1f, WheelScale);
 
                     McpRunOutcome outcome = await Input.RunAsync(McpInputSequences.Concat(
                         move, lease.Player.Scroll(point, eventDelta, modifiers)));

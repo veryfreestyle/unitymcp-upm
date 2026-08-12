@@ -3,7 +3,7 @@
     "rootNamespace": "VeryFS.UnityMCP.Editor",
     "references": [
         "FairyGUI",
-        "LitJson",
+        "VeryFS.Utilities",
         "UniTask",
         "UnityEditor.TestRunner"
     ],

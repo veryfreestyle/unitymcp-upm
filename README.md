@@ -56,8 +56,20 @@ Add the following to your project's `Packages/manifest.json`:
 ```
 
 **不要**再写 `com.veryfreestyle.unity.fairygui` / `com.veryfreestyle.unity.litjson`：本分支假定这两者由
-工程自己提供（内嵌源码或工程自己的 UPM 包），再声明一遍会拉进重复实现，撞出两个 `FairyGUI` 程序集和
+工程自己提供，再声明一遍会拉进重复实现，撞出两个 `FairyGUI` 程序集和
 `CS0433: JsonData exists in both ...`。
+
+本分支的 `package.json` 已经把 asmdef 引用的每个程序集的提供方包声明齐了，工程侧需要存在这些包：
+
+| asmdef 引用的程序集 | 需要工程提供的包 |
+|---|---|
+| `FairyGUI` | `com.veryfreestyle.3rdparties` |
+| `VeryFS.Utilities` | `com.veryfreestyle.utilities` |
+| `UniTask` | `com.cysharp.unitask` |
+| `UnityEditor.TestRunner` | `com.unity.test-framework` |
+
+包名或版本对不上时，把本分支 `package.json` 里的 dependencies 改成你工程里的实际包名即可 —— 作为包，
+asmdef 引用别的包的程序集必须在 package.json 里声明那个包，`Assets/` 下没有这条约束。
 
 ### 与 main 的差异
 
@@ -65,7 +77,7 @@ Add the following to your project's `Packages/manifest.json`:
 |---|---|---|
 | `Editor/Commands/FairyGUI/Input/FguiInputWheelCommand.cs` | `Stage.mouseWheelScale` → `1f` | FairyGUI 4.3.0 的 `Stage` 没有 `mouseWheelScale`（只有 `devicePixelRatio`），它的事件链里滚轮不经过这层缩放。传 `1f` 即跳过该层，行为与 4.3.0 一致 |
 | `Editor/VeryFS.UnityMCP.Editor.asmdef` | 引用 `LitJson` → `VeryFS.Utilities` | 宿主的 `VeryFS.Utilities` 已内嵌同命名空间同类名的 LitJson。源码里的 `using LitJson;` 不用改，命名空间不变，只是程序集来源换了 |
-| `package.json` | 去掉 fairygui / litjson 两个 dependencies | 同上，避免 UPM 拉进重复实现 |
+| `package.json` | 依赖改成宿主侧的四个提供方包（见上表） | 去掉会拉进重复实现的两个；补上 `com.unity.test-framework` 等 —— asmdef 引用了 `UnityEditor.TestRunner` 却没声明它的提供方包，作为包时解析不到 |
 
 FairyGUI 输入注入（`fgui-input` 的键盘 / 文本 / 滚轮 / 手势序列）依赖 fork 版 FairyGUI 的
 `IStageInputSource` 等 API。装配期按反射探测：探不到就自动降级成 `click` / `double-click` / `gesture` /

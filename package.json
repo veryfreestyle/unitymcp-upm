@@ -6,6 +6,9 @@
   "unity": "2021.3",
   "type": "tool",
   "dependencies": {
-    "com.cysharp.unitask": "https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask"
+    "com.cysharp.unitask": "https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask",
+    "com.unity.test-framework": "1.1.33",
+    "com.veryfreestyle.3rdparties": "1.0.0",
+    "com.veryfreestyle.utilities": "1.0.0"
   }
 }

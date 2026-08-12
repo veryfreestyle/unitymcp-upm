@@ -35,22 +35,6 @@ https://github.com/veryfreestyle/unitymcp-upm.git#hetao-scratch
 }
 ```
 
-**不要**再写 `com.veryfreestyle.unity.fairygui` / `com.veryfreestyle.unity.litjson`：本分支假定这两者由
-工程自己提供，再声明一遍会拉进重复实现，撞出两个 `FairyGUI` 程序集和
-`CS0433: JsonData exists in both ...`。
-
-本分支的 `package.json` 已经把 asmdef 引用的每个程序集的提供方包声明齐了，工程侧需要存在这些包：
-
-| asmdef 引用的程序集 | 需要工程提供的包 |
-|---|---|
-| `FairyGUI` | `com.veryfreestyle.3rdparties` |
-| `VeryFS.Utilities` | `com.veryfreestyle.utilities` |
-| `UniTask` | `com.cysharp.unitask` |
-| `UnityEditor.TestRunner` | `com.unity.test-framework` |
-
-包名或版本对不上时，把本分支 `package.json` 里的 dependencies 改成你工程里的实际包名即可 —— 作为包，
-asmdef 引用别的包的程序集必须在 package.json 里声明那个包，`Assets/` 下没有这条约束。
-
 ### 与 main 的差异
 
 | 文件 | 差异 | 原因 |
